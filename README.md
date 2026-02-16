@@ -79,6 +79,10 @@ tedtui 1
 4. **Toggle tasks** - Navigate to tasks with ↑/↓ and press Space to mark complete/incomplete
 5. **Save** - Press Ctrl+S to save changes (preserves original ID and creation date)
 
+**Project changes**: If you change the project while editing, the file will be renamed with the new project's shorthand while keeping the same numeric ID. The old file will be deleted automatically.
+
+For example: `WGR115_task.md` → `ADM115_task.md` when changing from project WGR to ADM.
+
 ### Moving a todo to done
 
 1. **Open the todo** - Load it with `tedtui <path>` or `tedtui <id>`

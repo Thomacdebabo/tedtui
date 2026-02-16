@@ -55,6 +55,7 @@ struct App {
     saved_filepath: Option<String>,
     original_id: Option<String>,
     original_created: Option<String>,
+    original_project_id: Option<String>,
     show_complete_confirmation: bool,
     completed_timestamp: Option<String>,
 }
@@ -83,6 +84,7 @@ impl App {
             saved_filepath: None,
             original_id: None,
             original_created: None,
+            original_project_id: None,
             show_complete_confirmation: false,
             completed_timestamp: None,
         }
@@ -95,6 +97,9 @@ impl App {
         let file_storage = FileStorage::new();
         let projects = file_storage.get_projects().unwrap_or_default();
         let output_dir = file_storage.get_todos_dir().to_string_lossy().to_string();
+        
+        // Store these before moving parsed values
+        let project_id = parsed.project_id.clone();
         
         Ok(App {
             name: parsed.name,
@@ -117,6 +122,7 @@ impl App {
             saved_filepath: Some(filepath.to_string()),
             original_id: Some(parsed.id),
             original_created: Some(parsed.created),
+            original_project_id: Some(project_id),
             show_complete_confirmation: false,
             completed_timestamp: None,
         })
@@ -144,6 +150,58 @@ impl App {
                 }
             });
 
+        // Check if project changed during edit
+        let project_changed = self.saved_filepath.is_some() 
+            && self.original_project_id.as_ref() != Some(&self.project_id);
+        
+        let old_filepath = self.saved_filepath.clone();
+        let (target_filepath, updated_id) = if project_changed {
+            // Extract numeric ID from original ID (e.g., "WGR123" -> 123, "T00061" -> 61)
+            if let Some(ref orig_id) = self.original_id {
+                use regex::Regex;
+                let re = Regex::new(r"^[A-Z]+(\d+)$").ok();
+                let numeric_id = re.and_then(|r| r.captures(orig_id))
+                    .and_then(|caps| caps.get(1))
+                    .and_then(|m| m.as_str().parse::<u32>().ok());
+                
+                if let Some(id_num) = numeric_id {
+                    // Generate new ID with new shorthand
+                    let new_id = if let Some(ref shorthand) = project_shorthand {
+                        format!("{}{:03}", shorthand, id_num)
+                    } else {
+                        format!("T{:05}", id_num)
+                    };
+                    
+                    // Generate new filename with existing ID
+                    // Sanitize name the same way FileStorage does
+                    let sanitized_name: String = self.name.chars()
+                        .map(|c| match c {
+                            'a'..='z' | 'A'..='Z' | '0'..='9' | '-' => c,
+                            ' ' => '_',
+                            _ => '_',
+                        })
+                        .collect::<String>()
+                        .to_lowercase();
+                    
+                    let new_filename = if let Some(ref shorthand) = project_shorthand {
+                        format!("{}{:03}_{}.md", shorthand, id_num, sanitized_name)
+                    } else {
+                        format!("T{:05}_{}.md", id_num, sanitized_name)
+                    };
+                    
+                    let new_path = PathBuf::from(&self.output_dir).join(&new_filename);
+                    
+                    (Some(new_path.to_string_lossy().to_string()), Some(new_id))
+                } else {
+                    (self.saved_filepath.clone(), self.original_id.clone())
+                }
+            } else {
+                (self.saved_filepath.clone(), self.original_id.clone())
+            }
+        } else {
+            (self.saved_filepath.clone(), self.original_id.clone())
+        };
+
         let todo_data = TodoData {
             name: self.name.clone(),
             project_id: self.project_id.clone(),
@@ -154,24 +212,43 @@ impl App {
                 format!("{}{}", prefix, t.text)
             }).collect(),
             note: self.note.clone(),
-            existing_id: self.original_id.clone(),
+            existing_id: updated_id.clone(),
             existing_created: self.original_created.clone(),
-            target_filepath: self.saved_filepath.clone(),
+            target_filepath: target_filepath.clone(),
             completed: self.completed_timestamp.clone(),
         };
 
         match todo_data.save_to_markdown(&self.output_dir) {
             Ok(filepath) => {
+                // Delete old file if project changed
+                if project_changed {
+                    if let Some(ref old_path) = old_filepath {
+                        if PathBuf::from(old_path).exists() {
+                            let _ = fs::remove_file(old_path);
+                        }
+                    }
+                    if let Some(new_id) = updated_id {
+                        self.original_id = Some(new_id);
+                    }
+                    self.original_project_id = Some(self.project_id.clone());
+                }
+                
                 let msg = if self.saved_filepath.is_some() {
-                    format!("✓ Updated: {}", filepath)
+                    if project_changed {
+                        format!("✓ Updated and moved: {}", filepath)
+                    } else {
+                        format!("✓ Updated: {}", filepath)
+                    }
                 } else {
                     format!("✓ Saved to: {}" , filepath)
                 };
                 self.status_message = Some(msg);
                 
-                // If editing an existing file, don't clear
-                if self.saved_filepath.is_none() {
-                    self.saved_filepath = Some(filepath);
+                // Update saved filepath
+                self.saved_filepath = Some(filepath);
+                
+                // If creating a new file, clear form
+                if old_filepath.is_none() {
                     self.clear_form();
                 }
             }
@@ -193,6 +270,7 @@ impl App {
         self.current_field = InputField::Name;
         self.original_id = None;
         self.original_created = None;
+        self.original_project_id = None;
         self.saved_filepath = None;
         self.completed_timestamp = None;
     }
