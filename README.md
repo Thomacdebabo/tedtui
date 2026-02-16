@@ -12,6 +12,7 @@ A terminal UI for quickly creating and managing Ted todos.
 - **Smart ID generation** - Automatically generates the next available ID
 - **Project shorthands** - Uses project shorthands (WGR, ADM, etc.) in filenames
 - **Auto-clear** - Clears form after save for quick consecutive todo creation (new todos only)
+- **Full Unicode support** - Type any characters including umlauts (ä, ö, ü), accents, Japanese (日本語), emoji (🎉), and more - preserved in both content and filenames
 
 ## Installation
 Install rust then:

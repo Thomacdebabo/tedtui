@@ -10,6 +10,7 @@ use crossterm::{
 use filestorage::{FileStorage, Project};
 use markdown::TodoData;
 use parser::parse_markdown_file;
+use unicode_width::UnicodeWidthStr;
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout},
@@ -173,12 +174,13 @@ impl App {
                     };
                     
                     // Generate new filename with existing ID
-                    // Sanitize name the same way FileStorage does
+                    // Sanitize name the same way FileStorage does (preserve unicode)
                     let sanitized_name: String = self.name.chars()
                         .map(|c| match c {
-                            'a'..='z' | 'A'..='Z' | '0'..='9' | '-' => c,
                             ' ' => '_',
-                            _ => '_',
+                            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+                            c if c.is_control() => '_',
+                            _ => c,
                         })
                         .collect::<String>()
                         .to_lowercase();
@@ -995,47 +997,47 @@ fn ui(f: &mut Frame, app: &App) {
     // Show cursor in the active field
     match app.current_field {
         InputField::Name => {
-            let visible_len = app.name.len().min((chunks[0].width - 3) as usize);
-            let cursor_x = if app.name.len() > (chunks[0].width - 3) as usize {
+            let text_width = app.name.width();
+            let cursor_x = if text_width > (chunks[0].width - 3) as usize {
                 chunks[0].width - 2
             } else {
-                chunks[0].x + visible_len as u16 + 1
+                chunks[0].x + text_width as u16 + 1
             };
             f.set_cursor_position((cursor_x, chunks[0].y + 1));
         }
         InputField::ProjectId => {
-            let visible_len = app.project_id.len().min((chunks[1].width - 3) as usize);
-            let cursor_x = if app.project_id.len() > (chunks[1].width - 3) as usize {
+            let text_width = app.project_id.width();
+            let cursor_x = if text_width > (chunks[1].width - 3) as usize {
                 chunks[1].width - 2
             } else {
-                chunks[1].x + visible_len as u16 + 1
+                chunks[1].x + text_width as u16 + 1
             };
             f.set_cursor_position((cursor_x, chunks[1].y + 1));
         }
         InputField::Goal => {
-            let visible_len = app.goal.len().min((chunks[2].width - 3) as usize);
-            let cursor_x = if app.goal.len() > (chunks[2].width - 3) as usize {
+            let text_width = app.goal.width();
+            let cursor_x = if text_width > (chunks[2].width - 3) as usize {
                 chunks[2].width - 2
             } else {
-                chunks[2].x + visible_len as u16 + 1
+                chunks[2].x + text_width as u16 + 1
             };
             f.set_cursor_position((cursor_x, chunks[2].y + 1));
         }
         InputField::Tasks => {
-            let visible_len = app.current_task_input.len().min((tasks_chunks[0].width - 3) as usize);
-            let cursor_x = if app.current_task_input.len() > (tasks_chunks[0].width - 3) as usize {
+            let text_width = app.current_task_input.width();
+            let cursor_x = if text_width > (tasks_chunks[0].width - 3) as usize {
                 tasks_chunks[0].width - 2
             } else {
-                tasks_chunks[0].x + visible_len as u16 + 1
+                tasks_chunks[0].x + text_width as u16 + 1
             };
             f.set_cursor_position((cursor_x, tasks_chunks[0].y + 1));
         }
         InputField::Note => {
-            let visible_len = app.note.len().min((chunks[4].width - 3) as usize);
-            let cursor_x = if app.note.len() > (chunks[4].width - 3) as usize {
+            let text_width = app.note.width();
+            let cursor_x = if text_width > (chunks[4].width - 3) as usize {
                 chunks[4].width - 2
             } else {
-                chunks[4].x + visible_len as u16 + 1
+                chunks[4].x + text_width as u16 + 1
             };
             f.set_cursor_position((cursor_x, chunks[4].y + 1));
         }

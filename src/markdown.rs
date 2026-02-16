@@ -104,3 +104,54 @@ impl TodoData {
         Ok(filepath)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::env;
+
+    #[test]
+    fn test_unicode_content_preservation() {
+        // Test that unicode characters are preserved in markdown content
+        let todo = TodoData {
+            name: "Test mit Ümläuten".to_string(),
+            project_id: String::new(),
+            project_shorthand: None,
+            goal: "Schöne Grüße aus München".to_string(),
+            tasks: vec![
+                "[ ] Äpfel kaufen".to_string(),
+                "[ ] Über Brücke gehen".to_string(),
+                "[x] Tschüss sagen".to_string(),
+            ],
+            note: "Café, naïve, 日本語, emoji: 🎉".to_string(),
+            existing_id: None,
+            existing_created: None,
+            target_filepath: None,
+            completed: None,
+        };
+
+        let temp_dir = env::temp_dir().join("tedtui_unicode_test");
+        fs::create_dir_all(&temp_dir).unwrap();
+        let output_dir = temp_dir.to_string_lossy().to_string();
+
+        // Save the file
+        let filepath = todo.save_to_markdown(&output_dir).unwrap();
+
+        // Read it back
+        let content = fs::read_to_string(&filepath).unwrap();
+
+        // Verify unicode characters are preserved
+        assert!(content.contains("Test mit Ümläuten"));
+        assert!(content.contains("Schöne Grüße aus München"));
+        assert!(content.contains("Äpfel kaufen"));
+        assert!(content.contains("Über Brücke gehen"));
+        assert!(content.contains("Tschüss sagen"));
+        assert!(content.contains("Café, naïve, 日本語, emoji: 🎉"));
+
+        // Verify unicode is also in the filename
+        assert!(filepath.contains("test_mit_ümläuten"));
+
+        // Cleanup
+        fs::remove_dir_all(&temp_dir).ok();
+    }
+}

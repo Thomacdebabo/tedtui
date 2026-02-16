@@ -160,12 +160,18 @@ impl FileStorage {
     }
 
     /// Sanitize name for use in filename
+    /// Preserves unicode characters but blocks filesystem-problematic characters
     fn sanitize_name(&self, name: &str) -> String {
         name.chars()
             .map(|c| match c {
-                'a'..='z' | 'A'..='Z' | '0'..='9' | '-' => c,
+                // Replace spaces with underscores
                 ' ' => '_',
-                _ => '_',
+                // Block filesystem-problematic characters
+                '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+                // Block control characters and newlines
+                c if c.is_control() => '_',
+                // Allow everything else (including unicode)
+                _ => c,
             })
             .collect::<String>()
             .to_lowercase()
@@ -210,7 +216,23 @@ mod tests {
     fn test_sanitize_name() {
         let fs = FileStorage::new();
         assert_eq!(fs.sanitize_name("Hello World"), "hello_world");
-        assert_eq!(fs.sanitize_name("Test@#$%"), "test____");
+        // Unicode characters are preserved
+        assert_eq!(fs.sanitize_name("Schöne Grüße"), "schöne_grüße");
+        assert_eq!(fs.sanitize_name("Über Äpfel"), "über_äpfel");
+        assert_eq!(fs.sanitize_name("Tschüss"), "tschüss");
+        // Problematic filesystem characters are blocked
+        assert_eq!(fs.sanitize_name("test/path"), "test_path");
+        assert_eq!(fs.sanitize_name("file:name"), "file_name");
+        assert_eq!(fs.sanitize_name("file*name?"), "file_name_");
+    }
+
+    #[test]
+    fn test_unicode_handling() {
+        let fs = FileStorage::new();
+        // Unicode characters are fully preserved in filenames
+        assert_eq!(fs.sanitize_name("日本語"), "日本語");
+        assert_eq!(fs.sanitize_name("Café ☕"), "café_☕");
+        assert_eq!(fs.sanitize_name("Привет мир"), "привет_мир");
     }
 
     #[test]
