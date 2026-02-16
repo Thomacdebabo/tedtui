@@ -14,7 +14,7 @@ A terminal UI for quickly creating and managing Ted todos.
 - **Auto-clear** - Clears form after save for quick consecutive todo creation (new todos only)
 
 ## Installation
-
+Install rust then:
 ```bash
 ./install.sh
 ```
@@ -40,12 +40,9 @@ Load a todo by file path:
 
 ```bash
 tedtui ~/.ted/todos/T00001_my_todo.md
-```
-
-Or by numeric ID (searches todos and done folders):
-
-```bash
 tedtui 1
+# if you have fted alias from ted repo
+tedtui $(fted) 
 ```
 
 ### Keyboard Shortcuts
