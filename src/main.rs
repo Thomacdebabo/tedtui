@@ -679,7 +679,7 @@ fn run_app<B: ratatui::backend::Backend>(
                     input.pop();
                 }
                 KeyCode::Char(c) => {
-                    if c == ' ' && app.current_field == InputField::Tasks {
+                    if c == ' ' && app.current_field == InputField::Tasks && app.selected_task_index.is_some() {
                         app.toggle_task_completion();
                     } else {
                         let input = app.get_current_input_mut();
