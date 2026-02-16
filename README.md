@@ -50,10 +50,11 @@ tedtui $(fted)
 
 - **Tab / Shift+Tab** - Navigate between fields
 - **Ctrl+P** - Open project selector (when in Project ID field)
-- **Enter** - Add task (when in Tasks field)
-- **Space** - Toggle task completion (when a task is selected)
-- **↑/↓** - Navigate tasks or projects
-- **Delete** - Remove selected task
+- **Enter** - Add task (when in Tasks input field)
+- **Tab** - Move from Tasks input to Task List (to toggle/delete tasks)
+- **Space** - Toggle task completion (when in Task List field)
+- **↑/↓** - Navigate tasks (when in Task List field) or projects (in project selector)
+- **Delete** - Remove selected task (when in Task List field)
 - **Ctrl+S** - Save todo (clears form only for new todos)
 - **Ctrl+D** - Move todo to done directory (with confirmation for incomplete tasks)
 - **Esc / Ctrl+C** - Quit
@@ -65,21 +66,24 @@ tedtui $(fted)
 1. **Name** - Enter the todo name
 2. **Project ID** - (Optional) Press Ctrl+P to select a project, or type it manually
 3. **Goal** - Enter a short description
-4. **Tasks** - Add multiple tasks (press Enter after each)
-5. **Note** - Add any additional notes
-6. **Save** - Press Ctrl+S to save and start a new todo
+4. **Tasks** - Add multiple tasks (press Enter after each, type spaces freely)
+5. **Task List** - (Optional) Tab to the task list to toggle/delete tasks with Space/Delete
+6. **Note** - Add any additional notes
+7. **Save** - Press Ctrl+S to save and start a new todo
 
 ### Editing an existing todo
 
 1. **Load** - Run `tedtui <path>` or `tedtui <id>`
 2. **Navigate** - Use Tab to move between fields
 3. **Edit** - Modify any field as needed
-4. **Toggle tasks** - Navigate to tasks with ↑/↓ and press Space to mark complete/incomplete
+4. **Toggle tasks** - Tab to Task List field, navigate with ↑/↓, press Space to mark complete/incomplete
 5. **Save** - Press Ctrl+S to save changes (preserves original ID and creation date)
 
 **Project changes**: If you change the project while editing, the file will be renamed with the new project's shorthand while keeping the same numeric ID. The old file will be deleted automatically.
 
 For example: `WGR115_task.md` → `ADM115_task.md` when changing from project WGR to ADM.
+
+**Task Management**: The Tasks input field is for typing new tasks (you can use spaces freely). Press Tab to move to the Task List field where you can navigate existing tasks with ↑/↓, toggle completion with Space, or delete with Delete.
 
 ### Moving a todo to done
 

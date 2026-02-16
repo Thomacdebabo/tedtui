@@ -29,6 +29,7 @@ enum InputField {
     ProjectId,
     Goal,
     Tasks,
+    TaskList,
     Note,
 }
 
@@ -398,9 +399,23 @@ impl App {
             InputField::Name => InputField::ProjectId,
             InputField::ProjectId => InputField::Goal,
             InputField::Goal => InputField::Tasks,
-            InputField::Tasks => InputField::Note,
+            InputField::Tasks => {
+                // When leaving task input, clear selection
+                self.selected_task_index = None;
+                InputField::TaskList
+            }
+            InputField::TaskList => {
+                // When leaving task list, clear selection
+                self.selected_task_index = None;
+                InputField::Note
+            }
             InputField::Note => InputField::Name,
         };
+        
+        // When entering TaskList, select first task if available
+        if self.current_field == InputField::TaskList && !self.tasks.is_empty() {
+            self.selected_task_index = Some(0);
+        }
     }
 
     fn previous_field(&mut self) {
@@ -409,8 +424,22 @@ impl App {
             InputField::ProjectId => InputField::Name,
             InputField::Goal => InputField::ProjectId,
             InputField::Tasks => InputField::Goal,
-            InputField::Note => InputField::Tasks,
+            InputField::TaskList => {
+                // When leaving task list, clear selection
+                self.selected_task_index = None;
+                InputField::Tasks
+            }
+            InputField::Note => {
+                // When leaving note, clear selection
+                self.selected_task_index = None;
+                InputField::TaskList
+            }
         };
+        
+        // When entering TaskList, select first task if available
+        if self.current_field == InputField::TaskList && !self.tasks.is_empty() {
+            self.selected_task_index = Some(0);
+        }
     }
 
     fn get_current_input_mut(&mut self) -> &mut String {
@@ -419,6 +448,7 @@ impl App {
             InputField::ProjectId => &mut self.project_id,
             InputField::Goal => &mut self.goal,
             InputField::Tasks => &mut self.current_task_input,
+            InputField::TaskList => &mut self.current_task_input, // Not really used, but needs to return something
             InputField::Note => &mut self.note,
         }
     }
@@ -665,11 +695,10 @@ fn run_app<B: ratatui::backend::Backend>(
                     app.quit = true;
                 }
                 KeyCode::Tab => {
-                    if key.modifiers.contains(KeyModifiers::SHIFT) {
-                        app.previous_field();
-                    } else {
-                        app.next_field();
-                    }
+                    app.next_field();
+                }
+                KeyCode::BackTab => {
+                    app.previous_field();
                 }
                 KeyCode::Enter => {
                     if app.current_field == InputField::Tasks {
@@ -677,29 +706,34 @@ fn run_app<B: ratatui::backend::Backend>(
                     }
                 }
                 KeyCode::Backspace => {
-                    let input = app.get_current_input_mut();
-                    input.pop();
+                    // Only allow backspace in input fields, not in TaskList
+                    if app.current_field != InputField::TaskList {
+                        let input = app.get_current_input_mut();
+                        input.pop();
+                    }
                 }
                 KeyCode::Char(c) => {
-                    if c == ' ' && app.current_field == InputField::Tasks && app.selected_task_index.is_some() {
+                    // Space toggles task completion only in TaskList
+                    if c == ' ' && app.current_field == InputField::TaskList {
                         app.toggle_task_completion();
-                    } else {
+                    } else if app.current_field != InputField::TaskList {
+                        // Allow typing in all fields except TaskList
                         let input = app.get_current_input_mut();
                         input.push(c);
                     }
                 }
                 KeyCode::Up => {
-                    if app.current_field == InputField::Tasks {
+                    if app.current_field == InputField::TaskList {
                         app.move_task_selection_up();
                     }
                 }
                 KeyCode::Down => {
-                    if app.current_field == InputField::Tasks {
+                    if app.current_field == InputField::TaskList {
                         app.move_task_selection_down();
                     }
                 }
                 KeyCode::Delete => {
-                    if app.current_field == InputField::Tasks {
+                    if app.current_field == InputField::TaskList {
                         app.delete_selected_task();
                     }
                 }
@@ -838,7 +872,12 @@ fn ui(f: &mut Frame, app: &App) {
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title("Tasks (↑↓ select, Space toggle, Del delete)"),
+                .title("Task List (Tab to enter, ↑↓ select, Space toggle, Del delete)")
+                .border_style(if app.current_field == InputField::TaskList {
+                    Style::default().fg(Color::Yellow)
+                } else {
+                    Style::default()
+                }),
         )
         .style(Style::default());
     f.render_widget(tasks_list, tasks_chunks[1]);
@@ -1031,6 +1070,11 @@ fn ui(f: &mut Frame, app: &App) {
                 tasks_chunks[0].x + text_width as u16 + 1
             };
             f.set_cursor_position((cursor_x, tasks_chunks[0].y + 1));
+        }
+        InputField::TaskList => {
+            // In task list mode, hide cursor by placing it off-screen or at a neutral position
+            // The selected task is shown with background highlighting instead
+            f.set_cursor_position((0, 0));
         }
         InputField::Note => {
             let text_width = app.note.width();
