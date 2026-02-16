@@ -55,6 +55,8 @@ struct App {
     saved_filepath: Option<String>,
     original_id: Option<String>,
     original_created: Option<String>,
+    show_complete_confirmation: bool,
+    completed_timestamp: Option<String>,
 }
 
 impl App {
@@ -81,6 +83,8 @@ impl App {
             saved_filepath: None,
             original_id: None,
             original_created: None,
+            show_complete_confirmation: false,
+            completed_timestamp: None,
         }
     }
 
@@ -113,6 +117,8 @@ impl App {
             saved_filepath: Some(filepath.to_string()),
             original_id: Some(parsed.id),
             original_created: Some(parsed.created),
+            show_complete_confirmation: false,
+            completed_timestamp: None,
         })
     }
 
@@ -151,6 +157,7 @@ impl App {
             existing_id: self.original_id.clone(),
             existing_created: self.original_created.clone(),
             target_filepath: self.saved_filepath.clone(),
+            completed: self.completed_timestamp.clone(),
         };
 
         match todo_data.save_to_markdown(&self.output_dir) {
@@ -187,6 +194,7 @@ impl App {
         self.original_id = None;
         self.original_created = None;
         self.saved_filepath = None;
+        self.completed_timestamp = None;
     }
 
     fn toggle_project_selector(&mut self) {
@@ -223,6 +231,86 @@ impl App {
                 None => 0,
             });
         }
+    }
+
+    fn has_incomplete_tasks(&self) -> bool {
+        self.tasks.iter().any(|t| !t.completed)
+    }
+
+    fn mark_all_tasks_complete(&mut self) {
+        for task in &mut self.tasks {
+            task.completed = true;
+        }
+    }
+
+    fn move_to_done(&mut self) -> io::Result<()> {
+        if self.saved_filepath.is_none() {
+            self.status_message = Some("Error: No file to move. Save first.".to_string());
+            return Ok(());
+        }
+
+        let source_path = self.saved_filepath.as_ref().unwrap();
+        let source = PathBuf::from(source_path);
+        
+        if !source.exists() {
+            return Err(io::Error::new(io::ErrorKind::NotFound, "Source file not found"));
+        }
+
+        // Set completed timestamp
+        use chrono::Local;
+        self.completed_timestamp = Some(Local::now().format("%m-%d-%Y_%H:%M:%S").to_string());
+
+        // Get filename from source
+        let filename = source.file_name()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "Invalid filename"))?
+            .to_string_lossy()
+            .to_string();
+
+        // Build destination path in done directory
+        let file_storage = FileStorage::new();
+        let done_dir = file_storage.get_done_dir();
+        let dest = done_dir.join(&filename);
+
+        // Save with completed timestamp to destination
+        let project_shorthand = self.selected_project_index
+            .and_then(|idx| self.projects.get(idx))
+            .and_then(|p| p.shorthand.clone())
+            .or_else(|| {
+                if !self.project_id.is_empty() {
+                    self.projects.iter()
+                        .find(|p| p.id == self.project_id)
+                        .and_then(|p| p.shorthand.clone())
+                } else {
+                    None
+                }
+            });
+
+        let todo_data = TodoData {
+            name: self.name.clone(),
+            project_id: self.project_id.clone(),
+            project_shorthand,
+            goal: self.goal.clone(),
+            tasks: self.tasks.iter().map(|t| {
+                let prefix = if t.completed { "[x] " } else { "[ ] " };
+                format!("{}{}", prefix, t.text)
+            }).collect(),
+            note: self.note.clone(),
+            existing_id: self.original_id.clone(),
+            existing_created: self.original_created.clone(),
+            target_filepath: Some(dest.to_string_lossy().to_string()),
+            completed: self.completed_timestamp.clone(),
+        };
+
+        // Save to done directory
+        todo_data.save_to_markdown(&done_dir.to_string_lossy())?;
+
+        // Delete original file from todos
+        fs::remove_file(&source)?;
+
+        self.status_message = Some(format!("✓ Moved to done: {}", filename));
+        self.saved_filepath = Some(dest.to_string_lossy().to_string());
+        
+        Ok(())
     }
 
     fn next_field(&mut self) {
@@ -429,6 +517,25 @@ fn run_app<B: ratatui::backend::Backend>(
             // Clear status message on any key press
             app.status_message = None;
             
+            // Handle completion confirmation dialog
+            if app.show_complete_confirmation {
+                match key.code {
+                    KeyCode::Char('y') | KeyCode::Char('Y') => {
+                        app.mark_all_tasks_complete();
+                        app.show_complete_confirmation = false;
+                        if let Err(e) = app.move_to_done() {
+                            app.status_message = Some(format!("Error moving to done: {}", e));
+                        }
+                    }
+                    KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                        app.show_complete_confirmation = false;
+                        app.status_message = Some("Move cancelled.".to_string());
+                    }
+                    _ => {}
+                }
+                continue;
+            }
+            
             // Handle project selector navigation
             if app.show_project_selector {
                 match key.code {
@@ -455,6 +562,19 @@ fn run_app<B: ratatui::backend::Backend>(
                 }
                 KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     app.save_to_file();
+                }
+                KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    if app.saved_filepath.is_some() {
+                        if app.has_incomplete_tasks() {
+                            app.show_complete_confirmation = true;
+                        } else {
+                            if let Err(e) = app.move_to_done() {
+                                app.status_message = Some(format!("Error moving to done: {}", e));
+                            }
+                        }
+                    } else {
+                        app.status_message = Some("Save the file first before moving to done.".to_string());
+                    }
                 }
                 KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     if app.current_field == InputField::ProjectId {
@@ -671,6 +791,8 @@ fn ui(f: &mut Frame, app: &App) {
             Span::raw(" - Projects | "),
             Span::styled("Ctrl+S", Style::default().fg(Color::Cyan)),
             Span::raw(" - Save | "),
+            Span::styled("Ctrl+D", Style::default().fg(Color::Cyan)),
+            Span::raw(" - Done | "),
             Span::styled("Esc", Style::default().fg(Color::Cyan)),
             Span::raw(" - Quit"),
         ]),
@@ -740,6 +862,56 @@ fn ui(f: &mut Frame, app: &App) {
             .style(Style::default().bg(Color::Black));
         
         f.render_widget(projects_list, popup_area);
+    }
+
+    // Completion confirmation overlay
+    if app.show_complete_confirmation {
+        // Calculate popup size
+        let popup_width = 60;
+        let popup_height = 7;
+        let popup_x = (f.area().width.saturating_sub(popup_width)) / 2;
+        let popup_y = (f.area().height.saturating_sub(popup_height)) / 2;
+        
+        let popup_area = ratatui::layout::Rect {
+            x: popup_x,
+            y: popup_y,
+            width: popup_width,
+            height: popup_height,
+        };
+        
+        let incomplete_count = app.tasks.iter().filter(|t| !t.completed).count();
+        let message = vec![
+            Line::from(""),
+            Line::from(Span::styled(
+                format!("You have {} incomplete task(s).", incomplete_count),
+                Style::default().fg(Color::White)
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "Mark all tasks as complete before moving to done?",
+                Style::default().fg(Color::Yellow)
+            )),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("Press ", Style::default().fg(Color::White)),
+                Span::styled("Y", Style::default().fg(Color::Green)),
+                Span::styled(" to mark complete and move, ", Style::default().fg(Color::White)),
+                Span::styled("N", Style::default().fg(Color::Red)),
+                Span::styled(" to cancel", Style::default().fg(Color::White)),
+            ]),
+        ];
+        
+        let confirmation = Paragraph::new(message)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title("Confirm Move to Done")
+                    .border_style(Style::default().fg(Color::Yellow)),
+            )
+            .style(Style::default().bg(Color::Black))
+            .wrap(Wrap { trim: false });
+        
+        f.render_widget(confirmation, popup_area);
     }
 
     // Show cursor in the active field

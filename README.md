@@ -7,6 +7,7 @@ A terminal UI for quickly creating and managing Ted todos.
 - **Quick todo creation** - Fill in name, project, goal, tasks, and notes
 - **File editing** - Open and edit existing todos by path or ID
 - **Task completion** - Toggle task completion with Space key
+- **Move to done** - Mark todos as complete and move to done directory with Ctrl+D
 - **Project integration** - Browse and select from your Ted projects
 - **Smart ID generation** - Automatically generates the next available ID
 - **Project shorthands** - Uses project shorthands (WGR, ADM, etc.) in filenames
@@ -56,6 +57,7 @@ tedtui 1
 - **↑/↓** - Navigate tasks or projects
 - **Delete** - Remove selected task
 - **Ctrl+S** - Save todo (clears form only for new todos)
+- **Ctrl+D** - Move todo to done directory (with confirmation for incomplete tasks)
 - **Esc / Ctrl+C** - Quit
 
 ## Workflow
@@ -76,6 +78,15 @@ tedtui 1
 3. **Edit** - Modify any field as needed
 4. **Toggle tasks** - Navigate to tasks with ↑/↓ and press Space to mark complete/incomplete
 5. **Save** - Press Ctrl+S to save changes (preserves original ID and creation date)
+
+### Moving a todo to done
+
+1. **Open the todo** - Load it with `tedtui <path>` or `tedtui <id>`
+2. **Press Ctrl+D** - Initiate move to done directory
+3. **Handle incomplete tasks** - If there are uncompleted tasks:
+   - Press **Y** to mark all tasks complete and move
+   - Press **N** to cancel the move
+4. **Completion** - The file is moved to `~/.ted/done/` with a completion timestamp
 
 ## File Output
 

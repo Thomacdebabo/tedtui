@@ -176,6 +176,10 @@ impl FileStorage {
         self.ted_root.join("todos")
     }
 
+    pub fn get_done_dir(&self) -> PathBuf {
+        self.ted_root.join("done")
+    }
+
     /// Format project ID for markdown frontmatter
     pub fn format_project_id(project_id: &str) -> String {
         if project_id.is_empty() {

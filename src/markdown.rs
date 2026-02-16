@@ -15,6 +15,7 @@ pub struct TodoData {
     pub existing_id: Option<String>,
     pub existing_created: Option<String>,
     pub target_filepath: Option<String>,
+    pub completed: Option<String>,
 }
 
 impl TodoData {
@@ -55,7 +56,11 @@ impl TodoData {
         
         // Frontmatter
         content.push_str("---\n");
-        content.push_str("completed: null\n");
+        if let Some(ref completed) = self.completed {
+            content.push_str(&format!("completed: {}\n", completed));
+        } else {
+            content.push_str("completed: null\n");
+        }
         content.push_str(&format!("created: {}\n", timestamp));
         content.push_str(&format!("id: {}\n", id));
         content.push_str("info: ''\n");
