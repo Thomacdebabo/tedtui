@@ -16,7 +16,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout},
     style::{Color, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
+    widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
     Frame, Terminal,
 };
 use std::fs;
@@ -39,113 +39,208 @@ struct Task {
     completed: bool,
 }
 
-struct App {
+struct AppState {
+    current_field: InputField,
+    selected_task_index: Option<usize>,
+    selected_project_index: Option<usize>,
+    show_project_selector: bool,
+    show_complete_confirmation: bool,
+    quit: bool,
+    status_message: Option<String>,
+}
+
+impl AppState {
+    fn new() -> Self {
+        AppState {
+            current_field: InputField::Name,
+            selected_task_index: None,
+            selected_project_index: None,
+            show_project_selector: false,
+            show_complete_confirmation: false,
+            quit: false,
+            status_message: None,
+        }
+    }
+}
+
+struct TodoContent {
     name: String,
     project_id: String,
     goal: String,
     tasks: Vec<Task>,
     current_task_input: String,
     note: String,
-    current_field: InputField,
-    selected_task_index: Option<usize>,
-    quit: bool,
-    status_message: Option<String>,
-    output_dir: String,
-    projects: Vec<Project>,
-    selected_project_index: Option<usize>,
-    show_project_selector: bool,
     saved_filepath: Option<String>,
     original_id: Option<String>,
     original_created: Option<String>,
     original_project_id: Option<String>,
-    show_complete_confirmation: bool,
     completed_timestamp: Option<String>,
 }
 
-impl App {
-    fn new() -> App {
-        let file_storage = FileStorage::new();
-        let projects = file_storage.get_projects().unwrap_or_default();
-        let output_dir = file_storage.get_todos_dir().to_string_lossy().to_string();
-        
-        App {
+impl TodoContent {
+    fn new() -> Self {
+        TodoContent {
             name: String::new(),
             project_id: String::new(),
             goal: String::new(),
             tasks: Vec::new(),
             current_task_input: String::new(),
             note: String::new(),
-            current_field: InputField::Name,
-            selected_task_index: None,
-            quit: false,
-            status_message: None,
-            output_dir,
-            projects,
-            selected_project_index: None,
-            show_project_selector: false,
             saved_filepath: None,
             original_id: None,
             original_created: None,
             original_project_id: None,
-            show_complete_confirmation: false,
             completed_timestamp: None,
         }
+    }
+    
+    fn clear(&mut self) {
+        self.name.clear();
+        self.project_id.clear();
+        self.goal.clear();
+        self.tasks.clear();
+        self.current_task_input.clear();
+        self.note.clear();
+        self.original_id = None;
+        self.original_created = None;
+        self.original_project_id = None;
+        self.saved_filepath = None;
+        self.completed_timestamp = None;
+    }
+}
+
+struct App {
+    state: AppState,
+    content: TodoContent,
+    config: AppConfig,
+}
+
+struct AppConfig {
+    output_dir: String,
+    projects: Vec<Project>,
+}
+
+impl AppConfig {
+    fn new() -> Self {
+        let file_storage = FileStorage::new();
+        let projects = file_storage.get_projects().unwrap_or_default();
+        let output_dir = file_storage.get_todos_dir().to_string_lossy().to_string();
+        
+        AppConfig {
+            output_dir,
+            projects,
+        }
+    }
+    
+    fn into_app(self) -> App {
+        App {
+            state: AppState::new(),
+            content: TodoContent::new(),
+            config: self,
+        }
+    }
+}
+
+impl App {
+    fn new() -> App {
+        AppConfig::new().into_app()
     }
 
     fn from_file(filepath: &str) -> io::Result<App> {
         let path = PathBuf::from(filepath);
         let parsed = parse_markdown_file(&path)?;
         
-        let file_storage = FileStorage::new();
-        let projects = file_storage.get_projects().unwrap_or_default();
-        let output_dir = file_storage.get_todos_dir().to_string_lossy().to_string();
+        let mut app = AppConfig::new().into_app();
         
-        // Store these before moving parsed values
-        let project_id = parsed.project_id.clone();
+        // Set parsed values
+        app.content.name = parsed.name;
+        app.content.project_id = parsed.project_id.clone();
+        app.content.goal = parsed.goal;
+        app.content.tasks = parsed.tasks.into_iter().map(|t| Task {
+            text: t.text,
+            completed: t.completed,
+        }).collect();
+        app.content.note = parsed.note;
+        app.content.saved_filepath = Some(filepath.to_string());
+        app.content.original_id = Some(parsed.id);
+        app.content.original_created = Some(parsed.created);
+        app.content.original_project_id = Some(parsed.project_id);
+        app.state.status_message = Some(format!("Loaded: {}", filepath));
         
-        Ok(App {
-            name: parsed.name,
-            project_id: parsed.project_id,
-            goal: parsed.goal,
-            tasks: parsed.tasks.into_iter().map(|t| Task {
-                text: t.text,
-                completed: t.completed,
-            }).collect(),
-            current_task_input: String::new(),
-            note: parsed.note,
-            current_field: InputField::Name,
-            selected_task_index: None,
-            quit: false,
-            status_message: Some(format!("Loaded: {}", filepath)),
-            output_dir,
-            projects,
-            selected_project_index: None,
-            show_project_selector: false,
-            saved_filepath: Some(filepath.to_string()),
-            original_id: Some(parsed.id),
-            original_created: Some(parsed.created),
-            original_project_id: Some(project_id),
-            show_complete_confirmation: false,
-            completed_timestamp: None,
-        })
+        Ok(app)
+    }
+
+    fn calculate_target_filepath_and_id(
+        &self,
+        project_changed: bool,
+        project_shorthand: Option<&String>,
+    ) -> (Option<String>, Option<String>) {
+        // If project didn't change, keep existing filepath and ID
+        if !project_changed {
+            return (self.content.saved_filepath.clone(), self.content.original_id.clone());
+        }
+
+        // Extract the original ID if available
+        let orig_id = match &self.content.original_id {
+            Some(id) => id,
+            None => return (self.content.saved_filepath.clone(), self.content.original_id.clone()),
+        };
+
+        // Extract numeric ID from original ID (e.g., "WGR123" -> 123, "T00061" -> 61)
+        use regex::Regex;
+        let numeric_id = Regex::new(r"^[A-Z]+(\d+)$")
+            .ok()
+            .and_then(|re| re.captures(orig_id))
+            .and_then(|caps| caps.get(1))
+            .and_then(|m| m.as_str().parse::<u32>().ok());
+
+        let id_num = match numeric_id {
+            Some(num) => num,
+            None => return (self.content.saved_filepath.clone(), self.content.original_id.clone()),
+        };
+
+        // Generate new ID with new shorthand
+        let new_id = match project_shorthand {
+            Some(shorthand) => format!("{}{:03}", shorthand, id_num),
+            None => format!("T{:05}", id_num),
+        };
+
+        // Sanitize name the same way FileStorage does (preserve unicode)
+        let sanitized_name: String = self.content.name
+            .chars()
+            .map(|c| match c {
+                ' ' => '_',
+                '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+                c if c.is_control() => '_',
+                _ => c,
+            })
+            .collect::<String>()
+            .to_lowercase();
+
+        // Generate new filename with existing ID
+        let new_filename = match project_shorthand {
+            Some(shorthand) => format!("{}{:03}_{}.md", shorthand, id_num, sanitized_name),
+            None => format!("T{:05}_{}.md", id_num, sanitized_name),
+        };
+
+        let new_path = PathBuf::from(&self.config.output_dir).join(&new_filename);
+        (Some(new_path.to_string_lossy().to_string()), Some(new_id))
     }
 
     fn save_to_file(&mut self) {
-        if self.name.is_empty() {
-            self.status_message = Some("Error: Name is required!".to_string());
+        if self.content.name.is_empty() {
+            self.state.status_message = Some("Error: Name is required!".to_string());
             return;
         }
 
         // Get selected project shorthand
-        // First try from selected index, then lookup by project_id
-        let project_shorthand = self.selected_project_index
-            .and_then(|idx| self.projects.get(idx))
+        let project_shorthand = self.state.selected_project_index
+            .and_then(|idx| self.config.projects.get(idx))
             .and_then(|p| p.shorthand.clone())
             .or_else(|| {
-                // If no selection but project_id is set, look it up
-                if !self.project_id.is_empty() {
-                    self.projects.iter()
-                        .find(|p| p.id == self.project_id)
+                if !self.content.project_id.is_empty() {
+                    self.config.projects.iter()
+                        .find(|p| p.id == self.content.project_id)
                         .and_then(|p| p.shorthand.clone())
                 } else {
                     None
@@ -153,75 +248,32 @@ impl App {
             });
 
         // Check if project changed during edit
-        let project_changed = self.saved_filepath.is_some() 
-            && self.original_project_id.as_ref() != Some(&self.project_id);
+        let project_changed = self.content.saved_filepath.is_some() 
+            && self.content.original_project_id.as_ref() != Some(&self.content.project_id);
         
-        let old_filepath = self.saved_filepath.clone();
-        let (target_filepath, updated_id) = if project_changed {
-            // Extract numeric ID from original ID (e.g., "WGR123" -> 123, "T00061" -> 61)
-            if let Some(ref orig_id) = self.original_id {
-                use regex::Regex;
-                let re = Regex::new(r"^[A-Z]+(\d+)$").ok();
-                let numeric_id = re.and_then(|r| r.captures(orig_id))
-                    .and_then(|caps| caps.get(1))
-                    .and_then(|m| m.as_str().parse::<u32>().ok());
-                
-                if let Some(id_num) = numeric_id {
-                    // Generate new ID with new shorthand
-                    let new_id = if let Some(ref shorthand) = project_shorthand {
-                        format!("{}{:03}", shorthand, id_num)
-                    } else {
-                        format!("T{:05}", id_num)
-                    };
-                    
-                    // Generate new filename with existing ID
-                    // Sanitize name the same way FileStorage does (preserve unicode)
-                    let sanitized_name: String = self.name.chars()
-                        .map(|c| match c {
-                            ' ' => '_',
-                            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
-                            c if c.is_control() => '_',
-                            _ => c,
-                        })
-                        .collect::<String>()
-                        .to_lowercase();
-                    
-                    let new_filename = if let Some(ref shorthand) = project_shorthand {
-                        format!("{}{:03}_{}.md", shorthand, id_num, sanitized_name)
-                    } else {
-                        format!("T{:05}_{}.md", id_num, sanitized_name)
-                    };
-                    
-                    let new_path = PathBuf::from(&self.output_dir).join(&new_filename);
-                    
-                    (Some(new_path.to_string_lossy().to_string()), Some(new_id))
-                } else {
-                    (self.saved_filepath.clone(), self.original_id.clone())
-                }
-            } else {
-                (self.saved_filepath.clone(), self.original_id.clone())
-            }
-        } else {
-            (self.saved_filepath.clone(), self.original_id.clone())
-        };
+        let old_filepath = self.content.saved_filepath.clone();
+        let (target_filepath, updated_id) = self.calculate_target_filepath_and_id(
+            project_changed,
+            project_shorthand.as_ref(),
+        );
 
         let todo_data = TodoData {
-            name: self.name.clone(),
-            project_id: self.project_id.clone(),
+            name: self.content.name.clone(),
+            project_id: self.content.project_id.clone(),
             project_shorthand,
-            goal: self.goal.clone(),
-            tasks: self.tasks.iter().map(|t| {
+            goal: self.content.goal.clone(),
+            tasks: self.content.tasks.iter().map(|t| {
                 let prefix = if t.completed { "[x] " } else { "[ ] " };
                 format!("{}{}", prefix, t.text)
             }).collect(),
-            note: self.note.clone(),
+            note: self.content.note.clone(),
             existing_id: updated_id.clone(),
-            existing_created: self.original_created.clone(),
+            existing_created: self.content.original_created.clone(),
             target_filepath: target_filepath.clone(),
-            completed: self.completed_timestamp.clone(),
+            completed: self.content.completed_timestamp.clone(),
         };
 
-        match todo_data.save_to_markdown(&self.output_dir) {
+        match todo_data.save_to_markdown(&self.config.output_dir) {
             Ok(filepath) => {
                 // Delete old file if project changed
                 if project_changed {
@@ -231,12 +283,12 @@ impl App {
                         }
                     }
                     if let Some(new_id) = updated_id {
-                        self.original_id = Some(new_id);
+                        self.content.original_id = Some(new_id);
                     }
-                    self.original_project_id = Some(self.project_id.clone());
+                    self.content.original_project_id = Some(self.content.project_id.clone());
                 }
                 
-                let msg = if self.saved_filepath.is_some() {
+                let msg = if self.content.saved_filepath.is_some() {
                     if project_changed {
                         format!("✓ Updated and moved: {}", filepath)
                     } else {
@@ -245,10 +297,10 @@ impl App {
                 } else {
                     format!("✓ Saved to: {}" , filepath)
                 };
-                self.status_message = Some(msg);
+                self.state.status_message = Some(msg);
                 
                 // Update saved filepath
-                self.saved_filepath = Some(filepath);
+                self.content.saved_filepath = Some(filepath);
                 
                 // If creating a new file, clear form
                 if old_filepath.is_none() {
@@ -256,58 +308,48 @@ impl App {
                 }
             }
             Err(e) => {
-                self.status_message = Some(format!("✗ Error saving: {}", e));
+                self.state.status_message = Some(format!("✗ Error saving: {}", e));
             }
         }
     }
 
     fn clear_form(&mut self) {
-        self.name.clear();
-        self.project_id.clear();
-        self.goal.clear();
-        self.tasks.clear();
-        self.current_task_input.clear();
-        self.note.clear();
-        self.selected_task_index = None;
-        self.selected_project_index = None;
-        self.current_field = InputField::Name;
-        self.original_id = None;
-        self.original_created = None;
-        self.original_project_id = None;
-        self.saved_filepath = None;
-        self.completed_timestamp = None;
+        self.content.clear();
+        self.state.selected_task_index = None;
+        self.state.selected_project_index = None;
+        self.state.current_field = InputField::Name;
     }
 
     fn toggle_project_selector(&mut self) {
-        self.show_project_selector = !self.show_project_selector;
-        if self.show_project_selector && self.selected_project_index.is_none() && !self.projects.is_empty() {
-            self.selected_project_index = Some(0);
+        self.state.show_project_selector = !self.state.show_project_selector;
+        if self.state.show_project_selector && self.state.selected_project_index.is_none() && !self.config.projects.is_empty() {
+            self.state.selected_project_index = Some(0);
         }
     }
 
     fn select_project(&mut self) {
-        if let Some(idx) = self.selected_project_index {
-            if let Some(project) = self.projects.get(idx) {
-                self.project_id = project.id.clone();
+        if let Some(idx) = self.state.selected_project_index {
+            if let Some(project) = self.config.projects.get(idx) {
+                self.content.project_id = project.id.clone();
             }
         }
-        self.show_project_selector = false;
+        self.state.show_project_selector = false;
     }
 
     fn move_project_selection_up(&mut self) {
-        if !self.projects.is_empty() {
-            self.selected_project_index = Some(match self.selected_project_index {
+        if !self.config.projects.is_empty() {
+            self.state.selected_project_index = Some(match self.state.selected_project_index {
                 Some(i) if i > 0 => i - 1,
-                Some(_) => self.projects.len() - 1,
+                Some(_) => self.config.projects.len() - 1,
                 None => 0,
             });
         }
     }
 
     fn move_project_selection_down(&mut self) {
-        if !self.projects.is_empty() {
-            self.selected_project_index = Some(match self.selected_project_index {
-                Some(i) if i < self.projects.len() - 1 => i + 1,
+        if !self.config.projects.is_empty() {
+            self.state.selected_project_index = Some(match self.state.selected_project_index {
+                Some(i) if i < self.config.projects.len() - 1 => i + 1,
                 Some(_) => 0,
                 None => 0,
             });
@@ -315,22 +357,22 @@ impl App {
     }
 
     fn has_incomplete_tasks(&self) -> bool {
-        self.tasks.iter().any(|t| !t.completed)
+        self.content.tasks.iter().any(|t| !t.completed)
     }
 
     fn mark_all_tasks_complete(&mut self) {
-        for task in &mut self.tasks {
+        for task in &mut self.content.tasks {
             task.completed = true;
         }
     }
 
     fn move_to_done(&mut self) -> io::Result<()> {
-        if self.saved_filepath.is_none() {
-            self.status_message = Some("Error: No file to move. Save first.".to_string());
+        if self.content.saved_filepath.is_none() {
+            self.state.status_message = Some("Error: No file to move. Save first.".to_string());
             return Ok(());
         }
 
-        let source_path = self.saved_filepath.as_ref().unwrap();
+        let source_path = self.content.saved_filepath.as_ref().unwrap();
         let source = PathBuf::from(source_path);
         
         if !source.exists() {
@@ -339,7 +381,7 @@ impl App {
 
         // Set completed timestamp
         use chrono::Local;
-        self.completed_timestamp = Some(Local::now().format("%m-%d-%Y_%H:%M:%S").to_string());
+        self.content.completed_timestamp = Some(Local::now().format("%m-%d-%Y_%H:%M:%S").to_string());
 
         // Get filename from source
         let filename = source.file_name()
@@ -353,13 +395,13 @@ impl App {
         let dest = done_dir.join(&filename);
 
         // Save with completed timestamp to destination
-        let project_shorthand = self.selected_project_index
-            .and_then(|idx| self.projects.get(idx))
+        let project_shorthand = self.state.selected_project_index
+            .and_then(|idx| self.config.projects.get(idx))
             .and_then(|p| p.shorthand.clone())
             .or_else(|| {
-                if !self.project_id.is_empty() {
-                    self.projects.iter()
-                        .find(|p| p.id == self.project_id)
+                if !self.content.project_id.is_empty() {
+                    self.config.projects.iter()
+                        .find(|p| p.id == self.content.project_id)
                         .and_then(|p| p.shorthand.clone())
                 } else {
                     None
@@ -367,19 +409,19 @@ impl App {
             });
 
         let todo_data = TodoData {
-            name: self.name.clone(),
-            project_id: self.project_id.clone(),
+            name: self.content.name.clone(),
+            project_id: self.content.project_id.clone(),
             project_shorthand,
-            goal: self.goal.clone(),
-            tasks: self.tasks.iter().map(|t| {
+            goal: self.content.goal.clone(),
+            tasks: self.content.tasks.iter().map(|t| {
                 let prefix = if t.completed { "[x] " } else { "[ ] " };
                 format!("{}{}", prefix, t.text)
             }).collect(),
-            note: self.note.clone(),
-            existing_id: self.original_id.clone(),
-            existing_created: self.original_created.clone(),
+            note: self.content.note.clone(),
+            existing_id: self.content.original_id.clone(),
+            existing_created: self.content.original_created.clone(),
             target_filepath: Some(dest.to_string_lossy().to_string()),
-            completed: self.completed_timestamp.clone(),
+            completed: self.content.completed_timestamp.clone(),
         };
 
         // Save to done directory
@@ -388,116 +430,116 @@ impl App {
         // Delete original file from todos
         fs::remove_file(&source)?;
 
-        self.status_message = Some(format!("✓ Moved to done: {}", filename));
-        self.saved_filepath = Some(dest.to_string_lossy().to_string());
+        self.state.status_message = Some(format!("✓ Moved to done: {}", filename));
+        self.content.saved_filepath = Some(dest.to_string_lossy().to_string());
         
         Ok(())
     }
 
     fn next_field(&mut self) {
-        self.current_field = match self.current_field {
+        self.state.current_field = match self.state.current_field {
             InputField::Name => InputField::ProjectId,
             InputField::ProjectId => InputField::Goal,
             InputField::Goal => InputField::Tasks,
             InputField::Tasks => {
                 // When leaving task input, clear selection
-                self.selected_task_index = None;
+                self.state.selected_task_index = None;
                 InputField::TaskList
             }
             InputField::TaskList => {
                 // When leaving task list, clear selection
-                self.selected_task_index = None;
+                self.state.selected_task_index = None;
                 InputField::Note
             }
             InputField::Note => InputField::Name,
         };
         
         // When entering TaskList, select first task if available
-        if self.current_field == InputField::TaskList && !self.tasks.is_empty() {
-            self.selected_task_index = Some(0);
+        if self.state.current_field == InputField::TaskList && !self.content.tasks.is_empty() {
+            self.state.selected_task_index = Some(0);
         }
     }
 
     fn previous_field(&mut self) {
-        self.current_field = match self.current_field {
+        self.state.current_field = match self.state.current_field {
             InputField::Name => InputField::Note,
             InputField::ProjectId => InputField::Name,
             InputField::Goal => InputField::ProjectId,
             InputField::Tasks => InputField::Goal,
             InputField::TaskList => {
                 // When leaving task list, clear selection
-                self.selected_task_index = None;
+                self.state.selected_task_index = None;
                 InputField::Tasks
             }
             InputField::Note => {
                 // When leaving note, clear selection
-                self.selected_task_index = None;
+                self.state.selected_task_index = None;
                 InputField::TaskList
             }
         };
         
         // When entering TaskList, select first task if available
-        if self.current_field == InputField::TaskList && !self.tasks.is_empty() {
-            self.selected_task_index = Some(0);
+        if self.state.current_field == InputField::TaskList && !self.content.tasks.is_empty() {
+            self.state.selected_task_index = Some(0);
         }
     }
 
     fn get_current_input_mut(&mut self) -> &mut String {
-        match self.current_field {
-            InputField::Name => &mut self.name,
-            InputField::ProjectId => &mut self.project_id,
-            InputField::Goal => &mut self.goal,
-            InputField::Tasks => &mut self.current_task_input,
-            InputField::TaskList => &mut self.current_task_input, // Not really used, but needs to return something
-            InputField::Note => &mut self.note,
+        match self.state.current_field {
+            InputField::Name => &mut self.content.name,
+            InputField::ProjectId => &mut self.content.project_id,
+            InputField::Goal => &mut self.content.goal,
+            InputField::Tasks => &mut self.content.current_task_input,
+            InputField::TaskList => &mut self.content.current_task_input,
+            InputField::Note => &mut self.content.note,
         }
     }
 
     fn add_task(&mut self) {
-        if !self.current_task_input.trim().is_empty() {
-            self.tasks.push(Task {
-                text: self.current_task_input.clone(),
+        if !self.content.current_task_input.trim().is_empty() {
+            self.content.tasks.push(Task {
+                text: self.content.current_task_input.clone(),
                 completed: false,
             });
-            self.current_task_input.clear();
+            self.content.current_task_input.clear();
         }
     }
 
     fn toggle_task_completion(&mut self) {
-        if let Some(index) = self.selected_task_index {
-            if let Some(task) = self.tasks.get_mut(index) {
+        if let Some(index) = self.state.selected_task_index {
+            if let Some(task) = self.content.tasks.get_mut(index) {
                 task.completed = !task.completed;
             }
         }
     }
 
     fn delete_selected_task(&mut self) {
-        if let Some(index) = self.selected_task_index {
-            if index < self.tasks.len() {
-                self.tasks.remove(index);
-                if self.tasks.is_empty() {
-                    self.selected_task_index = None;
-                } else if index >= self.tasks.len() {
-                    self.selected_task_index = Some(self.tasks.len() - 1);
+        if let Some(index) = self.state.selected_task_index {
+            if index < self.content.tasks.len() {
+                self.content.tasks.remove(index);
+                if self.content.tasks.is_empty() {
+                    self.state.selected_task_index = None;
+                } else if index >= self.content.tasks.len() {
+                    self.state.selected_task_index = Some(self.content.tasks.len() - 1);
                 }
             }
         }
     }
 
     fn move_task_selection_up(&mut self) {
-        if !self.tasks.is_empty() {
-            self.selected_task_index = Some(match self.selected_task_index {
+        if !self.content.tasks.is_empty() {
+            self.state.selected_task_index = Some(match self.state.selected_task_index {
                 Some(i) if i > 0 => i - 1,
-                Some(_) => self.tasks.len() - 1,
+                Some(_) => self.content.tasks.len() - 1,
                 None => 0,
             });
         }
     }
 
     fn move_task_selection_down(&mut self) {
-        if !self.tasks.is_empty() {
-            self.selected_task_index = Some(match self.selected_task_index {
-                Some(i) if i < self.tasks.len() - 1 => i + 1,
+        if !self.content.tasks.is_empty() {
+            self.state.selected_task_index = Some(match self.state.selected_task_index {
+                Some(i) if i < self.content.tasks.len() - 1 => i + 1,
                 Some(_) => 0,
                 None => 0,
             });
@@ -625,21 +667,21 @@ fn run_app<B: ratatui::backend::Backend>(
 
         if let Event::Key(key) = event::read()? {
             // Clear status message on any key press
-            app.status_message = None;
+            app.state.status_message = None;
             
             // Handle completion confirmation dialog
-            if app.show_complete_confirmation {
+            if app.state.show_complete_confirmation {
                 match key.code {
                     KeyCode::Char('y') | KeyCode::Char('Y') => {
                         app.mark_all_tasks_complete();
-                        app.show_complete_confirmation = false;
+                        app.state.show_complete_confirmation = false;
                         if let Err(e) = app.move_to_done() {
-                            app.status_message = Some(format!("Error moving to done: {}", e));
+                            app.state.status_message = Some(format!("Error moving to done: {}", e));
                         }
                     }
                     KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
-                        app.show_complete_confirmation = false;
-                        app.status_message = Some("Move cancelled.".to_string());
+                        app.state.show_complete_confirmation = false;
+                        app.state.status_message = Some("Move cancelled.".to_string());
                     }
                     _ => {}
                 }
@@ -647,10 +689,10 @@ fn run_app<B: ratatui::backend::Backend>(
             }
             
             // Handle project selector navigation
-            if app.show_project_selector {
+            if app.state.show_project_selector {
                 match key.code {
                     KeyCode::Esc => {
-                        app.show_project_selector = false;
+                        app.state.show_project_selector = false;
                     }
                     KeyCode::Up => {
                         app.move_project_selection_up();
@@ -668,31 +710,31 @@ fn run_app<B: ratatui::backend::Backend>(
             
             match key.code {
                 KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    app.quit = true;
+                    app.state.quit = true;
                 }
                 KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     app.save_to_file();
                 }
                 KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    if app.saved_filepath.is_some() {
+                    if app.content.saved_filepath.is_some() {
                         if app.has_incomplete_tasks() {
-                            app.show_complete_confirmation = true;
+                            app.state.show_complete_confirmation = true;
                         } else {
                             if let Err(e) = app.move_to_done() {
-                                app.status_message = Some(format!("Error moving to done: {}", e));
+                                app.state.status_message = Some(format!("Error moving to done: {}", e));
                             }
                         }
                     } else {
-                        app.status_message = Some("Save the file first before moving to done.".to_string());
+                        app.state.status_message = Some("Save the file first before moving to done.".to_string());
                     }
                 }
                 KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    if app.current_field == InputField::ProjectId {
+                    if app.state.current_field == InputField::ProjectId {
                         app.toggle_project_selector();
                     }
                 }
                 KeyCode::Esc => {
-                    app.quit = true;
+                    app.state.quit = true;
                 }
                 KeyCode::Tab => {
                     app.next_field();
@@ -701,39 +743,39 @@ fn run_app<B: ratatui::backend::Backend>(
                     app.previous_field();
                 }
                 KeyCode::Enter => {
-                    if app.current_field == InputField::Tasks {
+                    if app.state.current_field == InputField::Tasks {
                         app.add_task();
                     }
                 }
                 KeyCode::Backspace => {
                     // Only allow backspace in input fields, not in TaskList
-                    if app.current_field != InputField::TaskList {
+                    if app.state.current_field != InputField::TaskList {
                         let input = app.get_current_input_mut();
                         input.pop();
                     }
                 }
                 KeyCode::Char(c) => {
                     // Space toggles task completion only in TaskList
-                    if c == ' ' && app.current_field == InputField::TaskList {
+                    if c == ' ' && app.state.current_field == InputField::TaskList {
                         app.toggle_task_completion();
-                    } else if app.current_field != InputField::TaskList {
+                    } else if app.state.current_field != InputField::TaskList {
                         // Allow typing in all fields except TaskList
                         let input = app.get_current_input_mut();
                         input.push(c);
                     }
                 }
                 KeyCode::Up => {
-                    if app.current_field == InputField::TaskList {
+                    if app.state.current_field == InputField::TaskList {
                         app.move_task_selection_up();
                     }
                 }
                 KeyCode::Down => {
-                    if app.current_field == InputField::TaskList {
+                    if app.state.current_field == InputField::TaskList {
                         app.move_task_selection_down();
                     }
                 }
                 KeyCode::Delete => {
-                    if app.current_field == InputField::TaskList {
+                    if app.state.current_field == InputField::TaskList {
                         app.delete_selected_task();
                     }
                 }
@@ -741,7 +783,7 @@ fn run_app<B: ratatui::backend::Backend>(
             }
         }
 
-        if app.quit {
+        if app.state.quit {
             break;
         }
     }
@@ -768,15 +810,15 @@ fn ui(f: &mut Frame, app: &App) {
     let name_block = Block::default()
         .borders(Borders::ALL)
         .title("Name")
-        .border_style(if app.current_field == InputField::Name {
+        .border_style(if app.state.current_field == InputField::Name {
             Style::default().fg(Color::Yellow)
         } else {
             Style::default()
         });
-    let name_text = if app.name.len() > chunks[0].width as usize - 4 {
-        &app.name[app.name.len().saturating_sub(chunks[0].width as usize - 4)..]
+    let name_text = if app.content.name.len() > chunks[0].width as usize - 4 {
+        &app.content.name[app.content.name.len().saturating_sub(chunks[0].width as usize - 4)..]
     } else {
-        &app.name
+        &app.content.name
     };
     let name_paragraph = Paragraph::new(name_text)
         .block(name_block)
@@ -784,7 +826,7 @@ fn ui(f: &mut Frame, app: &App) {
     f.render_widget(name_paragraph, chunks[0]);
 
     // Project ID input
-    let project_title = if app.current_field == InputField::ProjectId {
+    let project_title = if app.state.current_field == InputField::ProjectId {
         "Project ID (Ctrl+P to select)"
     } else {
         "Project ID"
@@ -792,15 +834,15 @@ fn ui(f: &mut Frame, app: &App) {
     let project_block = Block::default()
         .borders(Borders::ALL)
         .title(project_title)
-        .border_style(if app.current_field == InputField::ProjectId {
+        .border_style(if app.state.current_field == InputField::ProjectId {
             Style::default().fg(Color::Yellow)
         } else {
             Style::default()
         });
-    let project_text = if app.project_id.len() > chunks[1].width as usize - 4 {
-        &app.project_id[app.project_id.len().saturating_sub(chunks[1].width as usize - 4)..]
+    let project_text = if app.content.project_id.len() > chunks[1].width as usize - 4 {
+        &app.content.project_id[app.content.project_id.len().saturating_sub(chunks[1].width as usize - 4)..]
     } else {
-        &app.project_id
+        &app.content.project_id
     };
     let project_paragraph = Paragraph::new(project_text)
         .block(project_block)
@@ -811,12 +853,12 @@ fn ui(f: &mut Frame, app: &App) {
     let goal_block = Block::default()
         .borders(Borders::ALL)
         .title("Goal / Short Description")
-        .border_style(if app.current_field == InputField::Goal {
+        .border_style(if app.state.current_field == InputField::Goal {
             Style::default().fg(Color::Yellow)
         } else {
             Style::default()
         });
-    let goal_paragraph = Paragraph::new(app.goal.as_str())
+    let goal_paragraph = Paragraph::new(app.content.goal.as_str())
         .block(goal_block)
         .wrap(Wrap { trim: false })
         .style(Style::default());
@@ -833,15 +875,15 @@ fn ui(f: &mut Frame, app: &App) {
     let task_input_block = Block::default()
         .borders(Borders::ALL)
         .title("Add Task (Enter to add)")
-        .border_style(if app.current_field == InputField::Tasks {
+        .border_style(if app.state.current_field == InputField::Tasks {
             Style::default().fg(Color::Yellow)
         } else {
             Style::default()
         });
-    let task_text = if app.current_task_input.len() > tasks_chunks[0].width as usize - 4 {
-        &app.current_task_input[app.current_task_input.len().saturating_sub(tasks_chunks[0].width as usize - 4)..]
+    let task_text = if app.content.current_task_input.len() > tasks_chunks[0].width as usize - 4 {
+        &app.content.current_task_input[app.content.current_task_input.len().saturating_sub(tasks_chunks[0].width as usize - 4)..]
     } else {
-        &app.current_task_input
+        &app.content.current_task_input
     };
     let task_input_paragraph = Paragraph::new(task_text)
         .block(task_input_block)
@@ -850,16 +892,13 @@ fn ui(f: &mut Frame, app: &App) {
 
     // Task list
     let task_items: Vec<ListItem> = app
-        .tasks
+        .content.tasks
         .iter()
-        .enumerate()
-        .map(|(i, task)| {
+        .map(|task| {
             let checkbox = if task.completed { "[x]" } else { "[ ]" };
             let text = format!("  - {} {}", checkbox, task.text);
             
-            let style = if Some(i) == app.selected_task_index {
-                Style::default().bg(Color::DarkGray).fg(Color::White)
-            } else if task.completed {
+            let style = if task.completed {
                 Style::default().fg(Color::DarkGray)
             } else {
                 Style::default()
@@ -873,25 +912,37 @@ fn ui(f: &mut Frame, app: &App) {
             Block::default()
                 .borders(Borders::ALL)
                 .title("Task List (Tab to enter, ↑↓ select, Space toggle, Del delete)")
-                .border_style(if app.current_field == InputField::TaskList {
+                .border_style(if app.state.current_field == InputField::TaskList {
                     Style::default().fg(Color::Yellow)
                 } else {
                     Style::default()
                 }),
         )
-        .style(Style::default());
-    f.render_widget(tasks_list, tasks_chunks[1]);
+        .style(Style::default())
+        .highlight_style(
+            Style::default()
+                .bg(Color::DarkGray)
+                .fg(Color::White)
+        );
+    
+    // Create ListState for scrolling support
+    let mut list_state = ListState::default();
+    if let Some(selected) = app.state.selected_task_index {
+        list_state.select(Some(selected));
+    }
+    
+    f.render_stateful_widget(tasks_list, tasks_chunks[1], &mut list_state);
 
     // Note input
     let note_block = Block::default()
         .borders(Borders::ALL)
         .title("Note")
-        .border_style(if app.current_field == InputField::Note {
+        .border_style(if app.state.current_field == InputField::Note {
             Style::default().fg(Color::Yellow)
         } else {
             Style::default()
         });
-    let note_paragraph = Paragraph::new(app.note.as_str())
+    let note_paragraph = Paragraph::new(app.content.note.as_str())
         .block(note_block)
         .wrap(Wrap { trim: false })
         .style(Style::default());
@@ -922,7 +973,7 @@ fn ui(f: &mut Frame, app: &App) {
     f.render_widget(help, chunks[5]);
 
     // Status message
-    if let Some(ref msg) = app.status_message {
+    if let Some(ref msg) = app.state.status_message {
         let status_color = if msg.contains("✓") {
             Color::Green
         } else if msg.contains("✗") {
@@ -937,7 +988,7 @@ fn ui(f: &mut Frame, app: &App) {
     }
 
     // Project selector overlay
-    if app.show_project_selector {
+    if app.state.show_project_selector {
         // Calculate popup size
         let popup_width = f.area().width.saturating_sub(20).max(40);
         let popup_height = f.area().height.saturating_sub(10).max(15).min(30);
@@ -953,11 +1004,11 @@ fn ui(f: &mut Frame, app: &App) {
         
         // Create project list items
         let project_items: Vec<ListItem> = app
-            .projects
+            .config.projects
             .iter()
             .enumerate()
             .map(|(i, project)| {
-                let style = if Some(i) == app.selected_project_index {
+                let style = if Some(i) == app.state.selected_project_index {
                     Style::default().bg(Color::Blue).fg(Color::White)
                 } else {
                     Style::default()
@@ -984,7 +1035,7 @@ fn ui(f: &mut Frame, app: &App) {
     }
 
     // Completion confirmation overlay
-    if app.show_complete_confirmation {
+    if app.state.show_complete_confirmation {
         // Calculate popup size
         let popup_width = 60;
         let popup_height = 7;
@@ -998,7 +1049,7 @@ fn ui(f: &mut Frame, app: &App) {
             height: popup_height,
         };
         
-        let incomplete_count = app.tasks.iter().filter(|t| !t.completed).count();
+        let incomplete_count = app.content.tasks.iter().filter(|t| !t.completed).count();
         let message = vec![
             Line::from(""),
             Line::from(Span::styled(
@@ -1034,9 +1085,9 @@ fn ui(f: &mut Frame, app: &App) {
     }
 
     // Show cursor in the active field
-    match app.current_field {
+    match app.state.current_field {
         InputField::Name => {
-            let text_width = app.name.width();
+            let text_width = app.content.name.width();
             let cursor_x = if text_width > (chunks[0].width - 3) as usize {
                 chunks[0].width - 2
             } else {
@@ -1045,7 +1096,7 @@ fn ui(f: &mut Frame, app: &App) {
             f.set_cursor_position((cursor_x, chunks[0].y + 1));
         }
         InputField::ProjectId => {
-            let text_width = app.project_id.width();
+            let text_width = app.content.project_id.width();
             let cursor_x = if text_width > (chunks[1].width - 3) as usize {
                 chunks[1].width - 2
             } else {
@@ -1054,7 +1105,7 @@ fn ui(f: &mut Frame, app: &App) {
             f.set_cursor_position((cursor_x, chunks[1].y + 1));
         }
         InputField::Goal => {
-            let text_width = app.goal.width();
+            let text_width = app.content.goal.width();
             let cursor_x = if text_width > (chunks[2].width - 3) as usize {
                 chunks[2].width - 2
             } else {
@@ -1063,7 +1114,7 @@ fn ui(f: &mut Frame, app: &App) {
             f.set_cursor_position((cursor_x, chunks[2].y + 1));
         }
         InputField::Tasks => {
-            let text_width = app.current_task_input.width();
+            let text_width = app.content.current_task_input.width();
             let cursor_x = if text_width > (tasks_chunks[0].width - 3) as usize {
                 tasks_chunks[0].width - 2
             } else {
@@ -1077,7 +1128,7 @@ fn ui(f: &mut Frame, app: &App) {
             f.set_cursor_position((0, 0));
         }
         InputField::Note => {
-            let text_width = app.note.width();
+            let text_width = app.content.note.width();
             let cursor_x = if text_width > (chunks[4].width - 3) as usize {
                 chunks[4].width - 2
             } else {
