@@ -94,58 +94,68 @@ impl FileStorage {
         let filename = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
 
         // Parse filename: P00017_MOVE_Move.md
-        let re = Regex::new(r"^(P\d+)(?:_([A-Z]+))?(?:_(.+))?\.md$").ok();
-        if let Some(re) = re {
-            if let Some(caps) = re.captures(filename) {
-                let id = caps
-                    .get(1)
-                    .map(|m| m.as_str().to_string())
-                    .unwrap_or_default();
-                let shorthand_from_filename = caps.get(2).map(|m| m.as_str().to_string());
+        let re = match Regex::new(r"^(P\d+)(?:_([A-Z]+))?(?:_(.+))?\.md$") {
+            Ok(re) => re,
+            Err(_) => return Ok(None),
+        };
 
-                // Try to get name and shorthand from file content (the heading)
-                let (name, shorthand) = if let Ok(content) = fs::read_to_string(path) {
-                    let (extracted_shorthand, extracted_name) =
-                        self.extract_project_info_from_content(&content);
-                    let final_name = extracted_name
-                        .or_else(|| caps.get(3).map(|m| m.as_str().to_string()))
-                        .unwrap_or_else(|| id.clone());
-                    let final_shorthand = shorthand_from_filename.or(extracted_shorthand);
-                    (final_name, final_shorthand)
-                } else {
-                    let final_name = caps
-                        .get(3)
-                        .map(|m| m.as_str().to_string())
-                        .unwrap_or_else(|| id.clone());
-                    (final_name, shorthand_from_filename)
-                };
+        let caps = match re.captures(filename) {
+            Some(caps) => caps,
+            None => return Ok(None),
+        };
 
-                return Ok(Some(Project {
-                    id,
-                    shorthand,
-                    name,
-                    filepath: path.to_path_buf(),
-                }));
+        let id = caps
+            .get(1)
+            .map(|m| m.as_str().to_string())
+            .unwrap_or_default();
+        let shorthand_from_filename = caps.get(2).map(|m| m.as_str().to_string());
+
+        // Try to get name and shorthand from file content (the heading)
+        let (name, shorthand) = match fs::read_to_string(path) {
+            Ok(content) => {
+                let (extracted_shorthand, extracted_name) =
+                    self.extract_project_info_from_content(&content);
+                let final_name = extracted_name
+                    .or_else(|| caps.get(3).map(|m| m.as_str().to_string()))
+                    .unwrap_or_else(|| id.clone());
+                let final_shorthand = shorthand_from_filename.or(extracted_shorthand);
+                (final_name, final_shorthand)
             }
-        }
+            Err(_) => {
+                let final_name = caps
+                    .get(3)
+                    .map(|m| m.as_str().to_string())
+                    .unwrap_or_else(|| id.clone());
+                (final_name, shorthand_from_filename)
+            }
+        };
 
-        Ok(None)
+        Ok(Some(Project {
+            id,
+            shorthand,
+            name,
+            filepath: path.to_path_buf(),
+        }))
     }
 
     /// Extract project name and shorthand from markdown content (from heading)
     fn extract_project_info_from_content(&self, content: &str) -> (Option<String>, Option<String>) {
         // Look for heading like "# MOVE: Move" or "# ADM: Admin things"
         for line in content.lines() {
-            if line.starts_with("# ") {
-                let heading = line.trim_start_matches("# ").trim();
-                // Check if there's a shorthand prefix before colon
-                if let Some(colon_pos) = heading.find(':') {
+            if !line.starts_with("# ") {
+                continue;
+            }
+
+            let heading = line.trim_start_matches("# ").trim();
+
+            // Check if there's a shorthand prefix before colon
+            match heading.find(':') {
+                Some(colon_pos) => {
                     let shorthand = heading[..colon_pos].trim().to_string();
                     let name = heading[colon_pos + 1..].trim().to_string();
                     return (Some(shorthand), Some(name));
-                } else {
-                    return (None, Some(heading.to_string()));
                 }
+                None => return (None, Some(heading.to_string())),
             }
         }
         (None, None)

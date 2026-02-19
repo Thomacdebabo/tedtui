@@ -930,9 +930,14 @@ fn handle_project_selector(app: &mut App, key_code: KeyCode) {
 }
 
 fn handle_history_viewer(app: &mut App, key_code: KeyCode) {
-    let history_entries: Vec<&str> = app.content.history.lines().filter(|line| !line.trim().is_empty()).collect();
+    let history_entries: Vec<&str> = app
+        .content
+        .history
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .collect();
     let max_scroll = history_entries.len().saturating_sub(1);
-    
+
     match key_code {
         KeyCode::Esc => app.state.show_history_viewer = false,
         KeyCode::Up => {
@@ -1413,7 +1418,7 @@ fn create_history_viewer_overlay<'a>(
     let end_idx = (start_idx + visible_lines).min(history_entries.len());
 
     let mut lines: Vec<Line> = vec![];
-    
+
     if history_entries.is_empty() {
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
@@ -1427,11 +1432,14 @@ fn create_history_viewer_overlay<'a>(
                 Style::default().fg(Color::White),
             )));
         }
-        
+
         // Show scroll indicator if there's more content
         if end_idx < history_entries.len() {
             lines.push(Line::from(Span::styled(
-                format!("... {} more entries (↓ to scroll)", history_entries.len() - end_idx),
+                format!(
+                    "... {} more entries (↓ to scroll)",
+                    history_entries.len() - end_idx
+                ),
                 Style::default().fg(Color::Yellow),
             )));
         }
@@ -1510,8 +1518,15 @@ fn render_cursor(
             f.set_cursor_position((cursor_x, tasks_chunks[0].y + 1));
         }
         InputField::TaskList => {
-            // Hide cursor in task list mode (selection shown with highlighting)
-            f.set_cursor_position((0, 0));
+            // Position cursor at the selected task in the list
+            if let Some(selected_idx) = app.state.selected_task_index {
+                let cursor_x = tasks_chunks[1].x + 1;
+                let cursor_y = tasks_chunks[1].y + 1 + selected_idx as u16;
+                f.set_cursor_position((cursor_x, cursor_y));
+            } else {
+                // No task selected, position at the start of the task list
+                f.set_cursor_position((tasks_chunks[1].x + 1, tasks_chunks[1].y + 1));
+            }
         }
         InputField::Note => {
             let cursor_x = calculate_cursor_x(&app.content.note, chunks[4].x, chunks[4].width);
