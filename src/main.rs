@@ -27,6 +27,7 @@ use std::path::PathBuf;
 enum InputField {
     Name,
     ProjectId,
+    Info,
     Goal,
     Tasks,
     TaskList,
@@ -66,6 +67,7 @@ impl AppState {
 struct TodoContent {
     name: String,
     project_id: String,
+    info: String,
     goal: String,
     tasks: Vec<Task>,
     current_task_input: String,
@@ -82,6 +84,7 @@ impl TodoContent {
         TodoContent {
             name: String::new(),
             project_id: String::new(),
+            info: String::new(),
             goal: String::new(),
             tasks: Vec::new(),
             current_task_input: String::new(),
@@ -97,6 +100,7 @@ impl TodoContent {
     fn clear(&mut self) {
         self.name.clear();
         self.project_id.clear();
+        self.info.clear();
         self.goal.clear();
         self.tasks.clear();
         self.current_task_input.clear();
@@ -155,6 +159,7 @@ impl App {
         // Set parsed values
         app.content.name = parsed.name;
         app.content.project_id = parsed.project_id.clone();
+        app.content.info = parsed.info;
         app.content.goal = parsed.goal;
         app.content.tasks = parsed.tasks.into_iter().map(|t| Task {
             text: t.text,
@@ -260,6 +265,7 @@ impl App {
         let todo_data = TodoData {
             name: self.content.name.clone(),
             project_id: self.content.project_id.clone(),
+            info: self.content.info.clone(),
             project_shorthand,
             goal: self.content.goal.clone(),
             tasks: self.content.tasks.iter().map(|t| {
@@ -411,6 +417,7 @@ impl App {
         let todo_data = TodoData {
             name: self.content.name.clone(),
             project_id: self.content.project_id.clone(),
+            info: self.content.info.clone(),
             project_shorthand,
             goal: self.content.goal.clone(),
             tasks: self.content.tasks.iter().map(|t| {
@@ -439,7 +446,8 @@ impl App {
     fn next_field(&mut self) {
         self.state.current_field = match self.state.current_field {
             InputField::Name => InputField::ProjectId,
-            InputField::ProjectId => InputField::Goal,
+            InputField::ProjectId => InputField::Info,
+            InputField::Info => InputField::Goal,
             InputField::Goal => InputField::Tasks,
             InputField::Tasks => {
                 // When leaving task input, clear selection
@@ -464,7 +472,8 @@ impl App {
         self.state.current_field = match self.state.current_field {
             InputField::Name => InputField::Note,
             InputField::ProjectId => InputField::Name,
-            InputField::Goal => InputField::ProjectId,
+            InputField::Info => InputField::ProjectId,
+            InputField::Goal => InputField::Info,
             InputField::Tasks => InputField::Goal,
             InputField::TaskList => {
                 // When leaving task list, clear selection
@@ -488,6 +497,7 @@ impl App {
         match self.state.current_field {
             InputField::Name => &mut self.content.name,
             InputField::ProjectId => &mut self.content.project_id,
+            InputField::Info => &mut self.content.info,
             InputField::Goal => &mut self.content.goal,
             InputField::Tasks => &mut self.content.current_task_input,
             InputField::TaskList => &mut self.content.current_task_input,
@@ -729,7 +739,7 @@ fn run_app<B: ratatui::backend::Backend>(
                     }
                 }
                 KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    if app.state.current_field == InputField::ProjectId {
+                    if app.state.current_field == InputField::ProjectId || app.state.current_field == InputField::Info {
                         app.toggle_project_selector();
                     }
                 }
@@ -797,7 +807,7 @@ fn ui(f: &mut Frame, app: &App) {
         .margin(2)
         .constraints([
             Constraint::Length(4), // Name
-            Constraint::Length(4), // Project ID
+            Constraint::Length(4), // Project ID and Info
             Constraint::Length(5), // Goal
             Constraint::Min(10),    // Tasks
             Constraint::Length(8), // Note
@@ -825,6 +835,15 @@ fn ui(f: &mut Frame, app: &App) {
         .style(Style::default());
     f.render_widget(name_paragraph, chunks[0]);
 
+    // Project ID and Info input (split horizontally)
+    let project_info_chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(50), // Project ID
+            Constraint::Percentage(50), // Info
+        ])
+        .split(chunks[1]);
+    
     // Project ID input
     let project_title = if app.state.current_field == InputField::ProjectId {
         "Project ID (Ctrl+P to select)"
@@ -839,15 +858,34 @@ fn ui(f: &mut Frame, app: &App) {
         } else {
             Style::default()
         });
-    let project_text = if app.content.project_id.len() > chunks[1].width as usize - 4 {
-        &app.content.project_id[app.content.project_id.len().saturating_sub(chunks[1].width as usize - 4)..]
+    let project_text = if app.content.project_id.len() > project_info_chunks[0].width as usize - 4 {
+        &app.content.project_id[app.content.project_id.len().saturating_sub(project_info_chunks[0].width as usize - 4)..]
     } else {
         &app.content.project_id
     };
     let project_paragraph = Paragraph::new(project_text)
         .block(project_block)
         .style(Style::default());
-    f.render_widget(project_paragraph, chunks[1]);
+    f.render_widget(project_paragraph, project_info_chunks[0]);
+    
+    // Info input
+    let info_block = Block::default()
+        .borders(Borders::ALL)
+        .title("Info")
+        .border_style(if app.state.current_field == InputField::Info {
+            Style::default().fg(Color::Yellow)
+        } else {
+            Style::default()
+        });
+    let info_text = if app.content.info.len() > project_info_chunks[1].width as usize - 4 {
+        &app.content.info[app.content.info.len().saturating_sub(project_info_chunks[1].width as usize - 4)..]
+    } else {
+        &app.content.info
+    };
+    let info_paragraph = Paragraph::new(info_text)
+        .block(info_block)
+        .style(Style::default());
+    f.render_widget(info_paragraph, project_info_chunks[1]);
 
     // Goal input
     let goal_block = Block::default()
@@ -1096,13 +1134,36 @@ fn ui(f: &mut Frame, app: &App) {
             f.set_cursor_position((cursor_x, chunks[0].y + 1));
         }
         InputField::ProjectId => {
+            let project_info_chunks = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([
+                    Constraint::Percentage(50),
+                    Constraint::Percentage(50),
+                ])
+                .split(chunks[1]);
             let text_width = app.content.project_id.width();
-            let cursor_x = if text_width > (chunks[1].width - 3) as usize {
-                chunks[1].width - 2
+            let cursor_x = if text_width > (project_info_chunks[0].width - 3) as usize {
+                project_info_chunks[0].width - 2
             } else {
-                chunks[1].x + text_width as u16 + 1
+                project_info_chunks[0].x + text_width as u16 + 1
             };
-            f.set_cursor_position((cursor_x, chunks[1].y + 1));
+            f.set_cursor_position((cursor_x, project_info_chunks[0].y + 1));
+        }
+        InputField::Info => {
+            let project_info_chunks = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([
+                    Constraint::Percentage(50),
+                    Constraint::Percentage(50),
+                ])
+                .split(chunks[1]);
+            let text_width = app.content.info.width();
+            let cursor_x = if text_width > (project_info_chunks[1].width - 3) as usize {
+                project_info_chunks[1].width - 2
+            } else {
+                project_info_chunks[1].x + text_width as u16 + 1
+            };
+            f.set_cursor_position((cursor_x, project_info_chunks[1].y + 1));
         }
         InputField::Goal => {
             let text_width = app.content.goal.width();

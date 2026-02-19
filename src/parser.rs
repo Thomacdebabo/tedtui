@@ -6,6 +6,7 @@ use std::path::Path;
 pub struct ParsedTodo {
     pub name: String,
     pub project_id: String,
+    pub info: String,
     pub goal: String,
     pub tasks: Vec<Task>,
     pub note: String,
@@ -24,6 +25,7 @@ pub fn parse_markdown_file(path: &Path) -> io::Result<ParsedTodo> {
     
     let mut name = String::new();
     let mut project_id = String::new();
+    let mut info = String::new();
     let mut goal = String::new();
     let mut tasks = Vec::new();
     let mut note = String::new();
@@ -51,6 +53,11 @@ pub fn parse_markdown_file(path: &Path) -> io::Result<ParsedTodo> {
                     project_id = val.trim_matches('[').trim_matches(']').to_string();
                 } else if val != "''" && val != "null" {
                     project_id = val.to_string();
+                }
+            } else if let Some(value) = line.strip_prefix("info:") {
+                let val = value.trim().trim_matches('\'').trim_matches('"');
+                if val != "''" && val != "null" {
+                    info = val.to_string();
                 }
             } else if let Some(value) = line.strip_prefix("created:") {
                 created = value.trim().to_string();
@@ -114,6 +121,7 @@ pub fn parse_markdown_file(path: &Path) -> io::Result<ParsedTodo> {
     Ok(ParsedTodo {
         name,
         project_id,
+        info: info.trim().to_string(),
         goal: goal.trim().to_string(),
         tasks,
         note: note.trim().to_string(),

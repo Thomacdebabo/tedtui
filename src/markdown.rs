@@ -8,6 +8,7 @@ use crate::filestorage::FileStorage;
 pub struct TodoData {
     pub name: String,
     pub project_id: String,
+    pub info: String,
     pub project_shorthand: Option<String>,
     pub goal: String,
     pub tasks: Vec<String>,
@@ -63,7 +64,7 @@ impl TodoData {
         }
         content.push_str(&format!("created: {}\n", timestamp));
         content.push_str(&format!("id: {}\n", id));
-        content.push_str("info: ''\n");
+        content.push_str(&format!("info: '{}'\n", self.info));
         content.push_str(&format!("project_id: {}\n", formatted_project_id));
         content.push_str("tags: []\n");
         content.push_str("---\n");
@@ -116,6 +117,7 @@ mod tests {
         let todo = TodoData {
             name: "Test mit Ümläuten".to_string(),
             project_id: String::new(),
+            info: String::new(),
             project_shorthand: None,
             goal: "Schöne Grüße aus München".to_string(),
             tasks: vec![
