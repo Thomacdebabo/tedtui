@@ -2,6 +2,7 @@ mod markdown;
 mod filestorage;
 mod parser;
 
+use serde::Deserialize;
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers},
     execute,
@@ -22,6 +23,16 @@ use ratatui::{
 use std::fs;
 use std::io;
 use std::path::PathBuf;
+
+#[derive(Debug, Deserialize)]
+struct JsonInput {
+    name: Option<String>,
+    project_id: Option<String>,
+    info: Option<String>,
+    goal: Option<String>,
+    tasks: Option<Vec<String>>,
+    note: Option<String>,
+}
 
 #[derive(Debug, Clone, PartialEq)]
 enum InputField {
@@ -171,6 +182,40 @@ impl App {
         app.content.original_created = Some(parsed.created);
         app.content.original_project_id = Some(parsed.project_id);
         app.state.status_message = Some(format!("Loaded: {}", filepath));
+        
+        Ok(app)
+    }
+
+    fn from_json(json_str: &str) -> io::Result<App> {
+        let json_input: JsonInput = serde_json::from_str(json_str)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, format!("Invalid JSON: {}", e)))?;
+        
+        let mut app = AppConfig::new().into_app();
+        
+        // Set values from JSON
+        if let Some(name) = json_input.name {
+            app.content.name = name;
+        }
+        if let Some(project_id) = json_input.project_id {
+            app.content.project_id = project_id;
+        }
+        if let Some(info) = json_input.info {
+            app.content.info = info;
+        }
+        if let Some(goal) = json_input.goal {
+            app.content.goal = goal;
+        }
+        if let Some(tasks) = json_input.tasks {
+            app.content.tasks = tasks.into_iter().map(|text| Task {
+                text,
+                completed: false,
+            }).collect();
+        }
+        if let Some(note) = json_input.note {
+            app.content.note = note;
+        }
+        
+        app.state.status_message = Some("Loaded from JSON".to_string());
         
         Ok(app)
     }
@@ -608,8 +653,23 @@ fn main() -> Result<(), io::Error> {
     let app = if args.len() > 1 {
         let arg = &args[1];
         
+        // Check for --json flag
+        if arg == "--json" {
+            if args.len() < 3 {
+                eprintln!("Usage: tedtui --json '<json_string>'");
+                return Err(io::Error::new(io::ErrorKind::InvalidInput, "Missing JSON string"));
+            }
+            let json_str = &args[2];
+            match App::from_json(json_str) {
+                Ok(app) => app,
+                Err(e) => {
+                    eprintln!("Error parsing JSON: {}", e);
+                    return Err(e);
+                }
+            }
+        }
         // Check if it's a file path
-        if arg.ends_with(".md") {
+        else if arg.ends_with(".md") {
             match App::from_file(arg) {
                 Ok(app) => app,
                 Err(e) => {
@@ -635,7 +695,7 @@ fn main() -> Result<(), io::Error> {
         }
         // Invalid argument
         else {
-            eprintln!("Usage: tedtui [file.md|ID]");
+            eprintln!("Usage: tedtui [--json '<json_string>'|file.md|ID]");
             return Err(io::Error::new(io::ErrorKind::InvalidInput, "Invalid argument"));
         }
     } else {
