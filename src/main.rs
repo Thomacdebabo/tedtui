@@ -20,7 +20,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout},
     style::{Color, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
+    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
 };
 use serde::Deserialize;
 use std::fs;
@@ -882,7 +882,12 @@ fn run_app<B: ratatui::backend::Backend>(
             }
 
             if app.state.show_history_viewer {
-                handle_history_viewer(&mut app, key.code);
+                // Check for Ctrl+H to toggle history viewer off
+                if key.code == KeyCode::Char('h') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                    app.toggle_history_viewer();
+                } else {
+                    handle_history_viewer(&mut app, key.code);
+                }
                 continue;
             }
 
@@ -1019,6 +1024,7 @@ enum WidgetItem<'a> {
     Paragraph(Paragraph<'a>, ratatui::layout::Rect),
     List(List<'a>, ratatui::layout::Rect),
     StatefulList(List<'a>, ListState, ratatui::layout::Rect),
+    Clear(ratatui::layout::Rect),
 }
 
 fn ui(f: &mut Frame, app: &App) {
@@ -1073,14 +1079,17 @@ fn ui(f: &mut Frame, app: &App) {
     // Render overlays (these are rendered immediately due to borrowing constraints)
     if app.state.show_project_selector {
         let (project_selector, popup_area) = create_project_selector_overlay(app, f.area());
+        widgets.push(WidgetItem::Clear(popup_area));
         widgets.push(WidgetItem::List(project_selector, popup_area));
     }
     if app.state.show_complete_confirmation {
         let (confirmation, popup_area) = create_completion_confirmation_overlay(app, f.area());
+        widgets.push(WidgetItem::Clear(popup_area));
         widgets.push(WidgetItem::Paragraph(confirmation, popup_area));
     }
     if app.state.show_history_viewer {
         let (history_viewer, popup_area) = create_history_viewer_overlay(app, f.area());
+        widgets.push(WidgetItem::Clear(popup_area));
         widgets.push(WidgetItem::Paragraph(history_viewer, popup_area));
     }
 
@@ -1092,6 +1101,7 @@ fn ui(f: &mut Frame, app: &App) {
             WidgetItem::StatefulList(w, mut state, area) => {
                 f.render_stateful_widget(w, area, &mut state)
             }
+            WidgetItem::Clear(area) => f.render_widget(Clear, area),
         }
     }
 
