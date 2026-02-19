@@ -1,6 +1,6 @@
+use regex::Regex;
 use std::fs;
 use std::path::{Path, PathBuf};
-use regex::Regex;
 
 #[derive(Debug, Clone)]
 pub struct Project {
@@ -21,10 +21,6 @@ impl FileStorage {
         FileStorage { ted_root }
     }
 
-    pub fn with_root(root: PathBuf) -> Self {
-        FileStorage { ted_root: root }
-    }
-
     /// Get the next available ID by scanning todos and done folders
     pub fn get_next_id(&self) -> Result<u32, std::io::Error> {
         let mut max_id = 0;
@@ -32,7 +28,9 @@ impl FileStorage {
         // Scan todos folder
         if let Ok(entries) = fs::read_dir(self.ted_root.join("todos")) {
             for entry in entries.flatten() {
-                if let Some(id) = self.extract_id_from_filename(&entry.file_name().to_string_lossy()) {
+                if let Some(id) =
+                    self.extract_id_from_filename(&entry.file_name().to_string_lossy())
+                {
                     max_id = max_id.max(id);
                 }
             }
@@ -41,7 +39,9 @@ impl FileStorage {
         // Scan done folder
         if let Ok(entries) = fs::read_dir(self.ted_root.join("done")) {
             for entry in entries.flatten() {
-                if let Some(id) = self.extract_id_from_filename(&entry.file_name().to_string_lossy()) {
+                if let Some(id) =
+                    self.extract_id_from_filename(&entry.file_name().to_string_lossy())
+                {
                     max_id = max_id.max(id);
                 }
             }
@@ -75,7 +75,7 @@ impl FileStorage {
         for entry in fs::read_dir(projects_dir)? {
             let entry = entry?;
             let path = entry.path();
-            
+
             if path.extension().and_then(|s| s.to_str()) == Some("md") {
                 if let Some(project) = self.parse_project_file(&path)? {
                     projects.push(project);
@@ -91,27 +91,31 @@ impl FileStorage {
 
     /// Parse a project file to extract metadata
     fn parse_project_file(&self, path: &Path) -> Result<Option<Project>, std::io::Error> {
-        let filename = path.file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("");
+        let filename = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
 
         // Parse filename: P00017_MOVE_Move.md
         let re = Regex::new(r"^(P\d+)(?:_([A-Z]+))?(?:_(.+))?\.md$").ok();
         if let Some(re) = re {
             if let Some(caps) = re.captures(filename) {
-                let id = caps.get(1).map(|m| m.as_str().to_string()).unwrap_or_default();
+                let id = caps
+                    .get(1)
+                    .map(|m| m.as_str().to_string())
+                    .unwrap_or_default();
                 let shorthand_from_filename = caps.get(2).map(|m| m.as_str().to_string());
-                
+
                 // Try to get name and shorthand from file content (the heading)
                 let (name, shorthand) = if let Ok(content) = fs::read_to_string(path) {
-                    let (extracted_shorthand, extracted_name) = self.extract_project_info_from_content(&content);
+                    let (extracted_shorthand, extracted_name) =
+                        self.extract_project_info_from_content(&content);
                     let final_name = extracted_name
                         .or_else(|| caps.get(3).map(|m| m.as_str().to_string()))
                         .unwrap_or_else(|| id.clone());
                     let final_shorthand = shorthand_from_filename.or(extracted_shorthand);
                     (final_name, final_shorthand)
                 } else {
-                    let final_name = caps.get(3).map(|m| m.as_str().to_string())
+                    let final_name = caps
+                        .get(3)
+                        .map(|m| m.as_str().to_string())
                         .unwrap_or_else(|| id.clone());
                     (final_name, shorthand_from_filename)
                 };
@@ -151,7 +155,7 @@ impl FileStorage {
     pub fn generate_filename(&self, name: &str, project_shorthand: Option<&str>) -> String {
         let next_id = self.get_next_id().unwrap_or(1);
         let sanitized_name = self.sanitize_name(name);
-        
+
         if let Some(shorthand) = project_shorthand {
             format!("{}{:03}_{}.md", shorthand, next_id, sanitized_name)
         } else {
@@ -205,9 +209,15 @@ mod tests {
     #[test]
     fn test_extract_id_from_filename() {
         let fs = FileStorage::new();
-        assert_eq!(fs.extract_id_from_filename("ADM106_something.md"), Some(106));
+        assert_eq!(
+            fs.extract_id_from_filename("ADM106_something.md"),
+            Some(106)
+        );
         assert_eq!(fs.extract_id_from_filename("T00061_test.md"), Some(61));
-        assert_eq!(fs.extract_id_from_filename("BUY112_new_phone.md"), Some(112));
+        assert_eq!(
+            fs.extract_id_from_filename("BUY112_new_phone.md"),
+            Some(112)
+        );
         assert_eq!(fs.extract_id_from_filename("WGR097_change.md"), Some(97));
         assert_eq!(fs.extract_id_from_filename("ORG110_cleaning.md"), Some(110));
     }
@@ -241,14 +251,19 @@ mod tests {
         if let Ok(projects) = fs.get_projects() {
             println!("\n=== Projects loaded ===");
             for project in projects.iter().take(5) {
-                println!("ID: {}, Shorthand: {:?}, Name: {}", 
-                    project.id, project.shorthand, project.name);
+                println!(
+                    "ID: {}, Shorthand: {:?}, Name: {}",
+                    project.id, project.shorthand, project.name
+                );
             }
-            
+
             // Check if P00002 has ADM shorthand
             if let Some(p2) = projects.iter().find(|p| p.id == "P00002") {
-                assert_eq!(p2.shorthand, Some("ADM".to_string()), 
-                    "P00002 should have ADM shorthand");
+                assert_eq!(
+                    p2.shorthand,
+                    Some("ADM".to_string()),
+                    "P00002 should have ADM shorthand"
+                );
             }
         }
     }

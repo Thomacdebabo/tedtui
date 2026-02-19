@@ -65,6 +65,8 @@ struct AppState {
     selected_project_index: Option<usize>,
     show_project_selector: bool,
     show_complete_confirmation: bool,
+    show_history_viewer: bool,
+    history_scroll_offset: usize,
     quit: bool,
     status_message: Option<String>,
 }
@@ -77,6 +79,8 @@ impl AppState {
             selected_project_index: None,
             show_project_selector: false,
             show_complete_confirmation: false,
+            show_history_viewer: false,
+            history_scroll_offset: 0,
             quit: false,
             status_message: None,
         }
@@ -91,6 +95,7 @@ struct TodoContent {
     tasks: Vec<Task>,
     current_task_input: String,
     note: String,
+    history: String,
     saved_filepath: Option<String>,
     original_id: Option<String>,
     original_created: Option<String>,
@@ -108,6 +113,7 @@ impl TodoContent {
             tasks: Vec::new(),
             current_task_input: String::new(),
             note: String::new(),
+            history: String::new(),
             saved_filepath: None,
             original_id: None,
             original_created: None,
@@ -124,6 +130,7 @@ impl TodoContent {
         self.tasks.clear();
         self.current_task_input.clear();
         self.note.clear();
+        self.history.clear();
         self.original_id = None;
         self.original_created = None;
         self.original_project_id = None;
@@ -195,6 +202,7 @@ impl App {
             })
             .collect();
         app.content.note = parsed.note;
+        app.content.history = parsed.history;
         app.content.saved_filepath = Some(filepath.to_string());
         app.content.original_id = Some(parsed.id);
         app.content.original_created = Some(parsed.created);
@@ -348,6 +356,20 @@ impl App {
         let (target_filepath, updated_id) =
             self.calculate_target_filepath_and_id(project_changed, project_shorthand.as_ref());
 
+        // Add history entry for save
+        use chrono::Local;
+        let timestamp = Local::now().format("%m-%d-%Y %H:%M:%S").to_string();
+        let action = if self.content.saved_filepath.is_some() {
+            "Updated"
+        } else {
+            "Created"
+        };
+        let history_entry = format!("{}, {}", timestamp, action);
+        if !self.content.history.is_empty() {
+            self.content.history.push('\n');
+        }
+        self.content.history.push_str(&history_entry);
+
         let todo_data = TodoData {
             name: self.content.name.clone(),
             project_id: self.content.project_id.clone(),
@@ -364,6 +386,7 @@ impl App {
                 })
                 .collect(),
             note: self.content.note.clone(),
+            history: self.content.history.clone(),
             existing_id: updated_id.clone(),
             existing_created: self.content.original_created.clone(),
             target_filepath: target_filepath.clone(),
@@ -426,6 +449,13 @@ impl App {
             && !self.config.projects.is_empty()
         {
             self.state.selected_project_index = Some(0);
+        }
+    }
+
+    fn toggle_history_viewer(&mut self) {
+        self.state.show_history_viewer = !self.state.show_history_viewer;
+        if !self.state.show_history_viewer {
+            self.state.history_scroll_offset = 0;
         }
     }
 
@@ -537,6 +567,7 @@ impl App {
                 })
                 .collect(),
             note: self.content.note.clone(),
+            history: self.content.history.clone(),
             existing_id: self.content.original_id.clone(),
             existing_created: self.content.original_created.clone(),
             target_filepath: Some(dest.to_string_lossy().to_string()),
@@ -636,7 +667,19 @@ impl App {
     fn toggle_task_completion(&mut self) {
         if let Some(index) = self.state.selected_task_index {
             if let Some(task) = self.content.tasks.get_mut(index) {
+                let was_completed = task.completed;
                 task.completed = !task.completed;
+
+                // Add history entry if task was just completed
+                if !was_completed && task.completed {
+                    use chrono::Local;
+                    let timestamp = Local::now().format("%m-%d-%Y %H:%M:%S").to_string();
+                    let history_entry = format!("{}, Completed task: {}", timestamp, task.text);
+                    if !self.content.history.is_empty() {
+                        self.content.history.push('\n');
+                    }
+                    self.content.history.push_str(&history_entry);
+                }
             }
         }
     }
@@ -838,6 +881,11 @@ fn run_app<B: ratatui::backend::Backend>(
                 continue;
             }
 
+            if app.state.show_history_viewer {
+                handle_history_viewer(&mut app, key.code);
+                continue;
+            }
+
             handle_main_input(&mut app, key);
         }
 
@@ -876,6 +924,26 @@ fn handle_project_selector(app: &mut App, key_code: KeyCode) {
     }
 }
 
+fn handle_history_viewer(app: &mut App, key_code: KeyCode) {
+    let history_entries: Vec<&str> = app.content.history.lines().filter(|line| !line.trim().is_empty()).collect();
+    let max_scroll = history_entries.len().saturating_sub(1);
+    
+    match key_code {
+        KeyCode::Esc => app.state.show_history_viewer = false,
+        KeyCode::Up => {
+            if app.state.history_scroll_offset > 0 {
+                app.state.history_scroll_offset -= 1;
+            }
+        }
+        KeyCode::Down => {
+            if app.state.history_scroll_offset < max_scroll {
+                app.state.history_scroll_offset += 1;
+            }
+        }
+        _ => {}
+    }
+}
+
 fn handle_main_input(app: &mut App, key: event::KeyEvent) {
     match key.code {
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -894,6 +962,9 @@ fn handle_main_input(app: &mut App, key: event::KeyEvent) {
             ) {
                 app.toggle_project_selector();
             }
+        }
+        KeyCode::Char('h') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.toggle_history_viewer();
         }
         KeyCode::Esc => app.state.quit = true,
         KeyCode::Tab => app.next_field(),
@@ -1007,6 +1078,10 @@ fn ui(f: &mut Frame, app: &App) {
     if app.state.show_complete_confirmation {
         let (confirmation, popup_area) = create_completion_confirmation_overlay(app, f.area());
         widgets.push(WidgetItem::Paragraph(confirmation, popup_area));
+    }
+    if app.state.show_history_viewer {
+        let (history_viewer, popup_area) = create_history_viewer_overlay(app, f.area());
+        widgets.push(WidgetItem::Paragraph(history_viewer, popup_area));
     }
 
     // Render all widgets
@@ -1171,6 +1246,8 @@ fn create_help() -> Paragraph<'static> {
         Span::raw(" - Toggle | "),
         Span::styled("Ctrl+P", Style::default().fg(Color::Cyan)),
         Span::raw(" - Projects | "),
+        Span::styled("Ctrl+H", Style::default().fg(Color::Cyan)),
+        Span::raw(" - History | "),
         Span::styled("Ctrl+S", Style::default().fg(Color::Cyan)),
         Span::raw(" - Save | "),
         Span::styled("Ctrl+D", Style::default().fg(Color::Cyan)),
@@ -1296,6 +1373,81 @@ fn create_completion_confirmation_overlay<'a>(
         .wrap(Wrap { trim: false });
 
     (confirmation, popup_area)
+}
+
+fn create_history_viewer_overlay<'a>(
+    app: &'a App,
+    frame_area: ratatui::layout::Rect,
+) -> (Paragraph<'a>, ratatui::layout::Rect) {
+    let popup_width = frame_area.width.saturating_sub(20).max(60);
+    let popup_height = frame_area.height.saturating_sub(10).max(15);
+    let popup_x = (frame_area.width.saturating_sub(popup_width)) / 2;
+    let popup_y = (frame_area.height.saturating_sub(popup_height)) / 2;
+
+    let popup_area = ratatui::layout::Rect {
+        x: popup_x,
+        y: popup_y,
+        width: popup_width,
+        height: popup_height,
+    };
+
+    let history_entries: Vec<&str> = app
+        .content
+        .history
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .collect();
+
+    let visible_lines = (popup_height as usize).saturating_sub(3); // Account for borders and title
+    let start_idx = app.state.history_scroll_offset;
+    let end_idx = (start_idx + visible_lines).min(history_entries.len());
+
+    let mut lines: Vec<Line> = vec![];
+    
+    if history_entries.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "No history entries yet.",
+            Style::default().fg(Color::Gray),
+        )));
+    } else {
+        for entry in history_entries.iter().skip(start_idx).take(visible_lines) {
+            lines.push(Line::from(Span::styled(
+                *entry,
+                Style::default().fg(Color::White),
+            )));
+        }
+        
+        // Show scroll indicator if there's more content
+        if end_idx < history_entries.len() {
+            lines.push(Line::from(Span::styled(
+                format!("... {} more entries (↓ to scroll)", history_entries.len() - end_idx),
+                Style::default().fg(Color::Yellow),
+            )));
+        }
+    }
+
+    let title = if history_entries.is_empty() {
+        "History (Esc to close)".to_string()
+    } else {
+        format!(
+            "History ({}/{}) (↑↓ to scroll, Esc to close)",
+            start_idx + 1,
+            history_entries.len()
+        )
+    };
+
+    let history_view = Paragraph::new(lines)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(title)
+                .border_style(Style::default().fg(Color::Cyan)),
+        )
+        .style(Style::default().bg(Color::Black))
+        .wrap(Wrap { trim: false });
+
+    (history_view, popup_area)
 }
 
 fn calculate_cursor_x(text: &str, area_x: u16, area_width: u16) -> u16 {
