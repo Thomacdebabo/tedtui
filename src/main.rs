@@ -1,3 +1,7 @@
+// ============================================================================
+// Module Imports and Dependencies
+// ============================================================================
+
 mod markdown;
 mod filestorage;
 mod parser;
@@ -23,6 +27,10 @@ use ratatui::{
 use std::fs;
 use std::io;
 use std::path::PathBuf;
+
+// ============================================================================
+// Data Structures
+// ============================================================================
 
 #[derive(Debug, Deserialize)]
 struct JsonInput {
@@ -156,7 +164,13 @@ impl AppConfig {
     }
 }
 
+// ============================================================================
+// App Implementation
+// ============================================================================
+
 impl App {
+    // --- Constructor Methods ---
+    
     fn new() -> App {
         AppConfig::new().into_app()
     }
@@ -219,6 +233,8 @@ impl App {
         
         Ok(app)
     }
+
+    // --- File Management Methods ---
 
     fn calculate_target_filepath_and_id(
         &self,
@@ -371,6 +387,8 @@ impl App {
         self.state.current_field = InputField::Name;
     }
 
+    // --- Project Selector Methods ---
+
     fn toggle_project_selector(&mut self) {
         self.state.show_project_selector = !self.state.show_project_selector;
         if self.state.show_project_selector && self.state.selected_project_index.is_none() && !self.config.projects.is_empty() {
@@ -406,6 +424,8 @@ impl App {
             });
         }
     }
+
+    // --- Task Completion and Done Management ---
 
     fn has_incomplete_tasks(&self) -> bool {
         self.content.tasks.iter().any(|t| !t.completed)
@@ -488,6 +508,8 @@ impl App {
         Ok(())
     }
 
+    // --- Field Navigation Methods ---
+
     fn next_field(&mut self) {
         self.state.current_field = match self.state.current_field {
             InputField::Name => InputField::ProjectId,
@@ -538,6 +560,8 @@ impl App {
         }
     }
 
+    // --- Input Handling Methods ---
+
     fn get_current_input_mut(&mut self) -> &mut String {
         match self.state.current_field {
             InputField::Name => &mut self.content.name,
@@ -549,6 +573,8 @@ impl App {
             InputField::Note => &mut self.content.note,
         }
     }
+
+    // --- Task Management Methods ---
 
     fn add_task(&mut self) {
         if !self.content.current_task_input.trim().is_empty() {
@@ -602,6 +628,10 @@ impl App {
     }
 }
 
+// ============================================================================
+// Utility Helper Functions
+// ============================================================================
+
 fn find_file_by_id(id_num: u32) -> Option<PathBuf> {
     let file_storage = FileStorage::new();
     let todos_dir = file_storage.get_todos_dir();
@@ -638,13 +668,14 @@ fn find_file_by_id(id_num: u32) -> Option<PathBuf> {
 fn extract_id_from_filename(filename: &str) -> Option<u32> {
     use regex::Regex;
     let re = Regex::new(r"^[A-Z]+(\d+)_").ok()?;
-    if let Some(caps) = re.captures(filename) {
-        if let Some(id_str) = caps.get(1) {
-            return id_str.as_str().parse::<u32>().ok();
-        }
-    }
-    None
+    re.captures(filename)
+        .and_then(|caps| caps.get(1))
+        .and_then(|m| m.as_str().parse::<u32>().ok())
 }
+
+// ============================================================================
+// Main Entry Point
+// ============================================================================
 
 fn main() -> Result<(), io::Error> {
     // Parse command line arguments
@@ -728,129 +759,32 @@ fn main() -> Result<(), io::Error> {
     Ok(())
 }
 
+// ============================================================================
+// Event Handling
+// ============================================================================
+
 fn run_app<B: ratatui::backend::Backend>(
     terminal: &mut Terminal<B>,
     mut app: App,
 ) -> io::Result<()> {
     loop {
-        terminal.draw(|f| ui(f, &app)).map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{}", e)))?;
+        terminal.draw(|f| ui(f, &app))
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{}", e)))?;
 
         if let Event::Key(key) = event::read()? {
-            // Clear status message on any key press
-            app.state.status_message = None;
+            app.state.status_message = None; // Clear status message on any key press
             
-            // Handle completion confirmation dialog
             if app.state.show_complete_confirmation {
-                match key.code {
-                    KeyCode::Char('y') | KeyCode::Char('Y') => {
-                        app.mark_all_tasks_complete();
-                        app.state.show_complete_confirmation = false;
-                        if let Err(e) = app.move_to_done() {
-                            app.state.status_message = Some(format!("Error moving to done: {}", e));
-                        }
-                    }
-                    KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
-                        app.state.show_complete_confirmation = false;
-                        app.state.status_message = Some("Move cancelled.".to_string());
-                    }
-                    _ => {}
-                }
+                handle_confirmation_dialog(&mut app, key.code);
                 continue;
             }
             
-            // Handle project selector navigation
             if app.state.show_project_selector {
-                match key.code {
-                    KeyCode::Esc => {
-                        app.state.show_project_selector = false;
-                    }
-                    KeyCode::Up => {
-                        app.move_project_selection_up();
-                    }
-                    KeyCode::Down => {
-                        app.move_project_selection_down();
-                    }
-                    KeyCode::Enter => {
-                        app.select_project();
-                    }
-                    _ => {}
-                }
+                handle_project_selector(&mut app, key.code);
                 continue;
             }
             
-            match key.code {
-                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    app.state.quit = true;
-                }
-                KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    app.save_to_file();
-                }
-                KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    if app.content.saved_filepath.is_some() {
-                        if app.has_incomplete_tasks() {
-                            app.state.show_complete_confirmation = true;
-                        } else {
-                            if let Err(e) = app.move_to_done() {
-                                app.state.status_message = Some(format!("Error moving to done: {}", e));
-                            }
-                        }
-                    } else {
-                        app.state.status_message = Some("Save the file first before moving to done.".to_string());
-                    }
-                }
-                KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    if app.state.current_field == InputField::ProjectId || app.state.current_field == InputField::Info {
-                        app.toggle_project_selector();
-                    }
-                }
-                KeyCode::Esc => {
-                    app.state.quit = true;
-                }
-                KeyCode::Tab => {
-                    app.next_field();
-                }
-                KeyCode::BackTab => {
-                    app.previous_field();
-                }
-                KeyCode::Enter => {
-                    if app.state.current_field == InputField::Tasks {
-                        app.add_task();
-                    }
-                }
-                KeyCode::Backspace => {
-                    // Only allow backspace in input fields, not in TaskList
-                    if app.state.current_field != InputField::TaskList {
-                        let input = app.get_current_input_mut();
-                        input.pop();
-                    }
-                }
-                KeyCode::Char(c) => {
-                    // Space toggles task completion only in TaskList
-                    if c == ' ' && app.state.current_field == InputField::TaskList {
-                        app.toggle_task_completion();
-                    } else if app.state.current_field != InputField::TaskList {
-                        // Allow typing in all fields except TaskList
-                        let input = app.get_current_input_mut();
-                        input.push(c);
-                    }
-                }
-                KeyCode::Up => {
-                    if app.state.current_field == InputField::TaskList {
-                        app.move_task_selection_up();
-                    }
-                }
-                KeyCode::Down => {
-                    if app.state.current_field == InputField::TaskList {
-                        app.move_task_selection_down();
-                    }
-                }
-                KeyCode::Delete => {
-                    if app.state.current_field == InputField::TaskList {
-                        app.delete_selected_task();
-                    }
-                }
-                _ => {}
-            }
+            handle_main_input(&mut app, key);
         }
 
         if app.state.quit {
@@ -861,131 +795,200 @@ fn run_app<B: ratatui::backend::Backend>(
     Ok(())
 }
 
+fn handle_confirmation_dialog(app: &mut App, key_code: KeyCode) {
+    match key_code {
+        KeyCode::Char('y') | KeyCode::Char('Y') => {
+            app.mark_all_tasks_complete();
+            app.state.show_complete_confirmation = false;
+            if let Err(e) = app.move_to_done() {
+                app.state.status_message = Some(format!("Error moving to done: {}", e));
+            }
+        }
+        KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+            app.state.show_complete_confirmation = false;
+            app.state.status_message = Some("Move cancelled.".to_string());
+        }
+        _ => {}
+    }
+}
+
+fn handle_project_selector(app: &mut App, key_code: KeyCode) {
+    match key_code {
+        KeyCode::Esc => app.state.show_project_selector = false,
+        KeyCode::Up => app.move_project_selection_up(),
+        KeyCode::Down => app.move_project_selection_down(),
+        KeyCode::Enter => app.select_project(),
+        _ => {}
+    }
+}
+
+fn handle_main_input(app: &mut App, key: event::KeyEvent) {
+    match key.code {
+                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    app.state.quit = true;
+                }
+                KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    app.save_to_file();
+                }
+                KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    handle_move_to_done(app);
+                }
+                KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    if matches!(app.state.current_field, InputField::ProjectId | InputField::Info) {
+                        app.toggle_project_selector();
+                    }
+                }
+                KeyCode::Esc => app.state.quit = true,
+                KeyCode::Tab => app.next_field(),
+                KeyCode::BackTab => app.previous_field(),
+                KeyCode::Enter => {
+                    if app.state.current_field == InputField::Tasks {
+                        app.add_task();
+                    }
+                }
+                KeyCode::Backspace => {
+                    if app.state.current_field != InputField::TaskList {
+                        app.get_current_input_mut().pop();
+                    }
+                }
+                KeyCode::Char(c) => {
+                    if c == ' ' && app.state.current_field == InputField::TaskList {
+                        app.toggle_task_completion();
+                    } else if app.state.current_field != InputField::TaskList {
+                        app.get_current_input_mut().push(c);
+                    }
+                }
+                KeyCode::Up if app.state.current_field == InputField::TaskList => {
+                    app.move_task_selection_up();
+                }
+                KeyCode::Down if app.state.current_field == InputField::TaskList => {
+                    app.move_task_selection_down();
+                }
+                KeyCode::Delete if app.state.current_field == InputField::TaskList => {
+                    app.delete_selected_task();
+                }
+                _ => {}
+            }
+}
+
+fn handle_move_to_done(app: &mut App) {
+    if app.content.saved_filepath.is_some() {
+        if app.has_incomplete_tasks() {
+            app.state.show_complete_confirmation = true;
+        } else if let Err(e) = app.move_to_done() {
+            app.state.status_message = Some(format!("Error moving to done: {}", e));
+        }
+    } else {
+        app.state.status_message = Some("Save the file first before moving to done.".to_string());
+    }
+}
+
+// ============================================================================
+// UI Rendering
+// ============================================================================
+
 fn ui(f: &mut Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .margin(2)
         .constraints([
-            Constraint::Length(4), // Name
-            Constraint::Length(4), // Project ID and Info
-            Constraint::Length(5), // Goal
+            Constraint::Length(4),  // Name
+            Constraint::Length(4),  // Project ID and Info
+            Constraint::Length(5),  // Goal
             Constraint::Min(10),    // Tasks
-            Constraint::Length(8), // Note
-            Constraint::Length(3), // Help
-            Constraint::Length(2), // Status
+            Constraint::Length(8),  // Note
+            Constraint::Length(3),  // Help
+            Constraint::Length(2),  // Status
         ])
         .split(f.area());
 
-    // Name input
-    let name_block = Block::default()
+    render_name_field(f, app, chunks[0]);
+    let project_info_chunks = render_project_info_fields(f, app, chunks[1]);
+    render_goal_field(f, app, chunks[2]);
+    let tasks_chunks = render_tasks_section(f, app, chunks[3]);
+    render_note_field(f, app, chunks[4]);
+    render_help(f, chunks[5]);
+    render_status_message(f, app, chunks[6]);
+    render_overlays(f, app);
+    render_cursor(f, app, &chunks, &project_info_chunks, &tasks_chunks);
+}
+
+fn create_input_block<'a>(title: &'a str, is_active: bool) -> Block<'a> {
+    Block::default()
         .borders(Borders::ALL)
-        .title("Name")
-        .border_style(if app.state.current_field == InputField::Name {
+        .title(title)
+        .border_style(if is_active {
             Style::default().fg(Color::Yellow)
         } else {
             Style::default()
-        });
-    let name_text = if app.content.name.len() > chunks[0].width as usize - 4 {
-        &app.content.name[app.content.name.len().saturating_sub(chunks[0].width as usize - 4)..]
-    } else {
-        &app.content.name
-    };
-    let name_paragraph = Paragraph::new(name_text)
-        .block(name_block)
-        .style(Style::default());
-    f.render_widget(name_paragraph, chunks[0]);
+        })
+}
 
-    // Project ID and Info input (split horizontally)
+fn truncate_text_for_display(text: &str, max_width: usize) -> &str {
+    if text.len() > max_width {
+        &text[text.len().saturating_sub(max_width)..]
+    } else {
+        text
+    }
+}
+
+fn render_name_field(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+    let is_active = app.state.current_field == InputField::Name;
+    let name_block = create_input_block("Name", is_active);
+    let name_text = truncate_text_for_display(&app.content.name, area.width as usize - 4);
+    let name_paragraph = Paragraph::new(name_text).block(name_block);
+    f.render_widget(name_paragraph, area);
+}
+
+fn render_project_info_fields(f: &mut Frame, app: &App, area: ratatui::layout::Rect) -> Vec<ratatui::layout::Rect> {
     let project_info_chunks = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(50), // Project ID
-            Constraint::Percentage(50), // Info
-        ])
-        .split(chunks[1]);
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(area);
     
-    // Project ID input
+    // Project ID
     let project_title = if app.state.current_field == InputField::ProjectId {
         "Project ID (Ctrl+P to select)"
     } else {
         "Project ID"
     };
-    let project_block = Block::default()
-        .borders(Borders::ALL)
-        .title(project_title)
-        .border_style(if app.state.current_field == InputField::ProjectId {
-            Style::default().fg(Color::Yellow)
-        } else {
-            Style::default()
-        });
-    let project_text = if app.content.project_id.len() > project_info_chunks[0].width as usize - 4 {
-        &app.content.project_id[app.content.project_id.len().saturating_sub(project_info_chunks[0].width as usize - 4)..]
-    } else {
-        &app.content.project_id
-    };
-    let project_paragraph = Paragraph::new(project_text)
-        .block(project_block)
-        .style(Style::default());
+    let is_active = app.state.current_field == InputField::ProjectId;
+    let project_block = create_input_block(project_title, is_active);
+    let project_text = truncate_text_for_display(&app.content.project_id, project_info_chunks[0].width as usize - 4);
+    let project_paragraph = Paragraph::new(project_text).block(project_block);
     f.render_widget(project_paragraph, project_info_chunks[0]);
     
-    // Info input
-    let info_block = Block::default()
-        .borders(Borders::ALL)
-        .title("Info")
-        .border_style(if app.state.current_field == InputField::Info {
-            Style::default().fg(Color::Yellow)
-        } else {
-            Style::default()
-        });
-    let info_text = if app.content.info.len() > project_info_chunks[1].width as usize - 4 {
-        &app.content.info[app.content.info.len().saturating_sub(project_info_chunks[1].width as usize - 4)..]
-    } else {
-        &app.content.info
-    };
-    let info_paragraph = Paragraph::new(info_text)
-        .block(info_block)
-        .style(Style::default());
+    // Info
+    let is_active = app.state.current_field == InputField::Info;
+    let info_block = create_input_block("Info", is_active);
+    let info_text = truncate_text_for_display(&app.content.info, project_info_chunks[1].width as usize - 4);
+    let info_paragraph = Paragraph::new(info_text).block(info_block);
     f.render_widget(info_paragraph, project_info_chunks[1]);
+    
+    project_info_chunks.to_vec()
 
-    // Goal input
-    let goal_block = Block::default()
-        .borders(Borders::ALL)
-        .title("Goal / Short Description")
-        .border_style(if app.state.current_field == InputField::Goal {
-            Style::default().fg(Color::Yellow)
-        } else {
-            Style::default()
-        });
+}
+
+fn render_goal_field(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+    let is_active = app.state.current_field == InputField::Goal;
+    let goal_block = create_input_block("Goal / Short Description", is_active);
     let goal_paragraph = Paragraph::new(app.content.goal.as_str())
         .block(goal_block)
-        .wrap(Wrap { trim: false })
-        .style(Style::default());
-    f.render_widget(goal_paragraph, chunks[2]);
+        .wrap(Wrap { trim: false });
+    f.render_widget(goal_paragraph, area);
+}
 
-    // Tasks section
-    let tasks_area = chunks[3];
+fn render_tasks_section(f: &mut Frame, app: &App, area: ratatui::layout::Rect) -> Vec<ratatui::layout::Rect> {
     let tasks_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(3), Constraint::Min(3)])
-        .split(tasks_area);
+        .split(area);
 
     // Task input
-    let task_input_block = Block::default()
-        .borders(Borders::ALL)
-        .title("Add Task (Enter to add)")
-        .border_style(if app.state.current_field == InputField::Tasks {
-            Style::default().fg(Color::Yellow)
-        } else {
-            Style::default()
-        });
-    let task_text = if app.content.current_task_input.len() > tasks_chunks[0].width as usize - 4 {
-        &app.content.current_task_input[app.content.current_task_input.len().saturating_sub(tasks_chunks[0].width as usize - 4)..]
-    } else {
-        &app.content.current_task_input
-    };
-    let task_input_paragraph = Paragraph::new(task_text)
-        .block(task_input_block)
-        .style(Style::default());
+    let is_active = app.state.current_field == InputField::Tasks;
+    let task_input_block = create_input_block("Add Task (Enter to add)", is_active);
+    let task_text = truncate_text_for_display(&app.content.current_task_input, tasks_chunks[0].width as usize - 4);
+    let task_input_paragraph = Paragraph::new(task_text).block(task_input_block);
     f.render_widget(task_input_paragraph, tasks_chunks[0]);
 
     // Task list
@@ -995,7 +998,6 @@ fn ui(f: &mut Frame, app: &App) {
         .map(|task| {
             let checkbox = if task.completed { "[x]" } else { "[ ]" };
             let text = format!("  - {} {}", checkbox, task.text);
-            
             let style = if task.completed {
                 Style::default().fg(Color::DarkGray)
             } else {
@@ -1005,72 +1007,53 @@ fn ui(f: &mut Frame, app: &App) {
         })
         .collect();
 
+    let is_active = app.state.current_field == InputField::TaskList;
     let tasks_list = List::new(task_items)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("Task List (Tab to enter, ↑↓ select, Space toggle, Del delete)")
-                .border_style(if app.state.current_field == InputField::TaskList {
-                    Style::default().fg(Color::Yellow)
-                } else {
-                    Style::default()
-                }),
-        )
-        .style(Style::default())
-        .highlight_style(
-            Style::default()
-                .bg(Color::DarkGray)
-                .fg(Color::White)
-        );
+        .block(create_input_block(
+            "Task List (Tab to enter, ↑↓ select, Space toggle, Del delete)",
+            is_active,
+        ))
+        .highlight_style(Style::default().bg(Color::DarkGray).fg(Color::White));
     
-    // Create ListState for scrolling support
     let mut list_state = ListState::default();
-    if let Some(selected) = app.state.selected_task_index {
-        list_state.select(Some(selected));
-    }
-    
+    list_state.select(app.state.selected_task_index);
     f.render_stateful_widget(tasks_list, tasks_chunks[1], &mut list_state);
+    
+    tasks_chunks.to_vec()
+}
 
-    // Note input
-    let note_block = Block::default()
-        .borders(Borders::ALL)
-        .title("Note")
-        .border_style(if app.state.current_field == InputField::Note {
-            Style::default().fg(Color::Yellow)
-        } else {
-            Style::default()
-        });
+fn render_note_field(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+    let is_active = app.state.current_field == InputField::Note;
+    let note_block = create_input_block("Note", is_active);
     let note_paragraph = Paragraph::new(app.content.note.as_str())
         .block(note_block)
-        .wrap(Wrap { trim: false })
-        .style(Style::default());
-    f.render_widget(note_paragraph, chunks[4]);
+        .wrap(Wrap { trim: false });
+    f.render_widget(note_paragraph, area);
+}
 
-    // Help text
-    let help_text = vec![
-        Line::from(vec![
-            Span::styled("Tab", Style::default().fg(Color::Cyan)),
-            Span::raw(" / "),
-            Span::styled("Shift+Tab", Style::default().fg(Color::Cyan)),
-            Span::raw(" - Navigate | "),
-            Span::styled("Space", Style::default().fg(Color::Cyan)),
-            Span::raw(" - Toggle task | "),
-            Span::styled("Ctrl+P", Style::default().fg(Color::Cyan)),
-            Span::raw(" - Projects | "),
-            Span::styled("Ctrl+S", Style::default().fg(Color::Cyan)),
-            Span::raw(" - Save | "),
-            Span::styled("Ctrl+D", Style::default().fg(Color::Cyan)),
-            Span::raw(" - Done | "),
-            Span::styled("Esc", Style::default().fg(Color::Cyan)),
-            Span::raw(" - Quit"),
-        ]),
-    ];
+fn render_help(f: &mut Frame, area: ratatui::layout::Rect) {
+    let help_text = Line::from(vec![
+        Span::styled("Tab", Style::default().fg(Color::Cyan)),
+        Span::raw(" / "),
+        Span::styled("Shift+Tab", Style::default().fg(Color::Cyan)),
+        Span::raw(" - Navigate | "),
+        Span::styled("Space", Style::default().fg(Color::Cyan)),
+        Span::raw(" - Toggle | "),
+        Span::styled("Ctrl+P", Style::default().fg(Color::Cyan)),
+        Span::raw(" - Projects | "),
+        Span::styled("Ctrl+S", Style::default().fg(Color::Cyan)),
+        Span::raw(" - Save | "),
+        Span::styled("Ctrl+D", Style::default().fg(Color::Cyan)),
+        Span::raw(" - Done | "),
+        Span::styled("Esc", Style::default().fg(Color::Cyan)),
+        Span::raw(" - Quit"),
+    ]);
     let help = Paragraph::new(help_text)
-        .block(Block::default().borders(Borders::ALL).title("Help"))
-        .style(Style::default());
-    f.render_widget(help, chunks[5]);
+        .block(Block::default().borders(Borders::ALL).title("Help"));
+    f.render_widget(help, area);
+}
 
-    // Status message
+fn render_status_message(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     if let Some(ref msg) = app.state.status_message {
         let status_color = if msg.contains("✓") {
             Color::Green
@@ -1082,179 +1065,154 @@ fn ui(f: &mut Frame, app: &App) {
         let status = Paragraph::new(msg.as_str())
             .style(Style::default().fg(status_color))
             .wrap(Wrap { trim: false });
-        f.render_widget(status, chunks[6]);
+        f.render_widget(status, area);
     }
+}
 
-    // Project selector overlay
+fn render_overlays(f: &mut Frame, app: &App) {
     if app.state.show_project_selector {
-        // Calculate popup size
-        let popup_width = f.area().width.saturating_sub(20).max(40);
-        let popup_height = f.area().height.saturating_sub(10).max(15).min(30);
-        let popup_x = (f.area().width.saturating_sub(popup_width)) / 2;
-        let popup_y = (f.area().height.saturating_sub(popup_height)) / 2;
-        
-        let popup_area = ratatui::layout::Rect {
-            x: popup_x,
-            y: popup_y,
-            width: popup_width,
-            height: popup_height,
-        };
-        
-        // Create project list items
-        let project_items: Vec<ListItem> = app
-            .config.projects
-            .iter()
-            .enumerate()
-            .map(|(i, project)| {
-                let style = if Some(i) == app.state.selected_project_index {
-                    Style::default().bg(Color::Blue).fg(Color::White)
-                } else {
-                    Style::default()
-                };
-                let text = if let Some(ref shorthand) = project.shorthand {
-                    format!("  {} - {} ({})", project.id, project.name, shorthand)
-                } else {
-                    format!("  {} - {}", project.id, project.name)
-                };
-                ListItem::new(text).style(style)
-            })
-            .collect();
-        
-        let projects_list = List::new(project_items)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title("Select Project (↑↓ to navigate, Enter to select, Esc to cancel)")
-                    .border_style(Style::default().fg(Color::Yellow)),
-            )
-            .style(Style::default().bg(Color::Black));
-        
-        f.render_widget(projects_list, popup_area);
+        render_project_selector_overlay(f, app);
     }
-
-    // Completion confirmation overlay
     if app.state.show_complete_confirmation {
-        // Calculate popup size
-        let popup_width = 60;
-        let popup_height = 7;
-        let popup_x = (f.area().width.saturating_sub(popup_width)) / 2;
-        let popup_y = (f.area().height.saturating_sub(popup_height)) / 2;
-        
-        let popup_area = ratatui::layout::Rect {
-            x: popup_x,
-            y: popup_y,
-            width: popup_width,
-            height: popup_height,
-        };
-        
-        let incomplete_count = app.content.tasks.iter().filter(|t| !t.completed).count();
-        let message = vec![
-            Line::from(""),
-            Line::from(Span::styled(
-                format!("You have {} incomplete task(s).", incomplete_count),
-                Style::default().fg(Color::White)
-            )),
-            Line::from(""),
-            Line::from(Span::styled(
-                "Mark all tasks as complete before moving to done?",
-                Style::default().fg(Color::Yellow)
-            )),
-            Line::from(""),
-            Line::from(vec![
-                Span::styled("Press ", Style::default().fg(Color::White)),
-                Span::styled("Y", Style::default().fg(Color::Green)),
-                Span::styled(" to mark complete and move, ", Style::default().fg(Color::White)),
-                Span::styled("N", Style::default().fg(Color::Red)),
-                Span::styled(" to cancel", Style::default().fg(Color::White)),
-            ]),
-        ];
-        
-        let confirmation = Paragraph::new(message)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title("Confirm Move to Done")
-                    .border_style(Style::default().fg(Color::Yellow)),
-            )
-            .style(Style::default().bg(Color::Black))
-            .wrap(Wrap { trim: false });
-        
-        f.render_widget(confirmation, popup_area);
+        render_completion_confirmation_overlay(f, app);
     }
+}
 
-    // Show cursor in the active field
+fn render_project_selector_overlay(f: &mut Frame, app: &App) {
+    let popup_width = f.area().width.saturating_sub(20).max(40);
+    let popup_height = f.area().height.saturating_sub(10).max(15).min(30);
+    let popup_x = (f.area().width.saturating_sub(popup_width)) / 2;
+    let popup_y = (f.area().height.saturating_sub(popup_height)) / 2;
+    
+    let popup_area = ratatui::layout::Rect {
+        x: popup_x,
+        y: popup_y,
+        width: popup_width,
+        height: popup_height,
+    };
+    
+    let project_items: Vec<ListItem> = app
+        .config.projects
+        .iter()
+        .enumerate()
+        .map(|(i, project)| {
+            let style = if Some(i) == app.state.selected_project_index {
+                Style::default().bg(Color::Blue).fg(Color::White)
+            } else {
+                Style::default()
+            };
+            let text = if let Some(ref shorthand) = project.shorthand {
+                format!("  {} - {} ({})", project.id, project.name, shorthand)
+            } else {
+                format!("  {} - {}", project.id, project.name)
+            };
+            ListItem::new(text).style(style)
+        })
+        .collect();
+    
+    let projects_list = List::new(project_items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Select Project (↑↓ to navigate, Enter to select, Esc to cancel)")
+                .border_style(Style::default().fg(Color::Yellow)),
+        )
+        .style(Style::default().bg(Color::Black));
+    
+    f.render_widget(projects_list, popup_area);
+}
+
+fn render_completion_confirmation_overlay(f: &mut Frame, app: &App) {
+    let popup_width = 60;
+    let popup_height = 7;
+    let popup_x = (f.area().width.saturating_sub(popup_width)) / 2;
+    let popup_y = (f.area().height.saturating_sub(popup_height)) / 2;
+    
+    let popup_area = ratatui::layout::Rect {
+        x: popup_x,
+        y: popup_y,
+        width: popup_width,
+        height: popup_height,
+    };
+    
+    let incomplete_count = app.content.tasks.iter().filter(|t| !t.completed).count();
+    let message = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            format!("You have {} incomplete task(s).", incomplete_count),
+            Style::default().fg(Color::White)
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Mark all tasks as complete before moving to done?",
+            Style::default().fg(Color::Yellow)
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("Press ", Style::default().fg(Color::White)),
+            Span::styled("Y", Style::default().fg(Color::Green)),
+            Span::styled(" to mark complete and move, ", Style::default().fg(Color::White)),
+            Span::styled("N", Style::default().fg(Color::Red)),
+            Span::styled(" to cancel", Style::default().fg(Color::White)),
+        ]),
+    ];
+    
+    let confirmation = Paragraph::new(message)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Confirm Move to Done")
+                .border_style(Style::default().fg(Color::Yellow)),
+        )
+        .style(Style::default().bg(Color::Black))
+        .wrap(Wrap { trim: false });
+    
+    f.render_widget(confirmation, popup_area);
+}
+
+fn calculate_cursor_x(text: &str, area_x: u16, area_width: u16) -> u16 {
+    let text_width = text.width();
+    if text_width > (area_width - 3) as usize {
+        area_x + area_width - 2
+    } else {
+        area_x + text_width as u16 + 1
+    }
+}
+
+fn render_cursor(
+    f: &mut Frame,
+    app: &App,
+    chunks: &[ratatui::layout::Rect],
+    project_info_chunks: &[ratatui::layout::Rect],
+    tasks_chunks: &[ratatui::layout::Rect],
+) {
     match app.state.current_field {
         InputField::Name => {
-            let text_width = app.content.name.width();
-            let cursor_x = if text_width > (chunks[0].width - 3) as usize {
-                chunks[0].width - 2
-            } else {
-                chunks[0].x + text_width as u16 + 1
-            };
+            let cursor_x = calculate_cursor_x(&app.content.name, chunks[0].x, chunks[0].width);
             f.set_cursor_position((cursor_x, chunks[0].y + 1));
         }
         InputField::ProjectId => {
-            let project_info_chunks = Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints([
-                    Constraint::Percentage(50),
-                    Constraint::Percentage(50),
-                ])
-                .split(chunks[1]);
-            let text_width = app.content.project_id.width();
-            let cursor_x = if text_width > (project_info_chunks[0].width - 3) as usize {
-                project_info_chunks[0].width - 2
-            } else {
-                project_info_chunks[0].x + text_width as u16 + 1
-            };
+            let cursor_x = calculate_cursor_x(&app.content.project_id, project_info_chunks[0].x, project_info_chunks[0].width);
             f.set_cursor_position((cursor_x, project_info_chunks[0].y + 1));
         }
         InputField::Info => {
-            let project_info_chunks = Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints([
-                    Constraint::Percentage(50),
-                    Constraint::Percentage(50),
-                ])
-                .split(chunks[1]);
-            let text_width = app.content.info.width();
-            let cursor_x = if text_width > (project_info_chunks[1].width - 3) as usize {
-                project_info_chunks[1].width - 2
-            } else {
-                project_info_chunks[1].x + text_width as u16 + 1
-            };
+            let cursor_x = calculate_cursor_x(&app.content.info, project_info_chunks[1].x, project_info_chunks[1].width);
             f.set_cursor_position((cursor_x, project_info_chunks[1].y + 1));
         }
         InputField::Goal => {
-            let text_width = app.content.goal.width();
-            let cursor_x = if text_width > (chunks[2].width - 3) as usize {
-                chunks[2].width - 2
-            } else {
-                chunks[2].x + text_width as u16 + 1
-            };
+            let cursor_x = calculate_cursor_x(&app.content.goal, chunks[2].x, chunks[2].width);
             f.set_cursor_position((cursor_x, chunks[2].y + 1));
         }
         InputField::Tasks => {
-            let text_width = app.content.current_task_input.width();
-            let cursor_x = if text_width > (tasks_chunks[0].width - 3) as usize {
-                tasks_chunks[0].width - 2
-            } else {
-                tasks_chunks[0].x + text_width as u16 + 1
-            };
+            let cursor_x = calculate_cursor_x(&app.content.current_task_input, tasks_chunks[0].x, tasks_chunks[0].width);
             f.set_cursor_position((cursor_x, tasks_chunks[0].y + 1));
         }
         InputField::TaskList => {
-            // In task list mode, hide cursor by placing it off-screen or at a neutral position
-            // The selected task is shown with background highlighting instead
+            // Hide cursor in task list mode (selection shown with highlighting)
             f.set_cursor_position((0, 0));
         }
         InputField::Note => {
-            let text_width = app.content.note.width();
-            let cursor_x = if text_width > (chunks[4].width - 3) as usize {
-                chunks[4].width - 2
-            } else {
-                chunks[4].x + text_width as u16 + 1
-            };
+            let cursor_x = calculate_cursor_x(&app.content.note, chunks[4].x, chunks[4].width);
             f.set_cursor_position((cursor_x, chunks[4].y + 1));
         }
     }
