@@ -721,16 +721,10 @@ impl App {
 // ============================================================================
 // Utility Helper Functions
 // ============================================================================
-
-fn find_file_by_id(id_num: u32) -> Option<PathBuf> {
-    let file_storage = FileStorage::new();
-    let todos_dir = file_storage.get_todos_dir();
-
-    // Try to find file in todos directory
-    if let Ok(entries) = fs::read_dir(&todos_dir) {
+fn find_file_by_id_in_directory(dir: &PathBuf, id_num: u32) -> Option<PathBuf> {
+    if let Ok(entries) = fs::read_dir(dir) {
         for entry in entries.flatten() {
             let filename = entry.file_name().to_string_lossy().to_string();
-            // Match patterns like T00123_ or ADM123_ or any PREFIX123_
             if let Some(extracted_id) = extract_id_from_filename(&filename) {
                 if extracted_id == id_num {
                     return Some(entry.path());
@@ -738,18 +732,21 @@ fn find_file_by_id(id_num: u32) -> Option<PathBuf> {
             }
         }
     }
+    None
+}
+fn find_file_by_id(id_num: u32) -> Option<PathBuf> {
+    let file_storage = FileStorage::new();
+    let todos_dir = file_storage.get_todos_dir();
+    let done_dir = file_storage.get_done_dir();
+
+    // Try to find file in todos directory
+    if let Some(filepath) = find_file_by_id_in_directory(&todos_dir, id_num) {
+        return Some(filepath);
+    }
 
     // Also check done directory
-    let done_dir = file_storage.get_todos_dir().parent()?.join("done");
-    if let Ok(entries) = fs::read_dir(&done_dir) {
-        for entry in entries.flatten() {
-            let filename = entry.file_name().to_string_lossy().to_string();
-            if let Some(extracted_id) = extract_id_from_filename(&filename) {
-                if extracted_id == id_num {
-                    return Some(entry.path());
-                }
-            }
-        }
+    if let Some(filepath) = find_file_by_id_in_directory(&done_dir, id_num) {
+        return Some(filepath);
     }
 
     None
