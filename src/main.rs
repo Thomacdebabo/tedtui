@@ -2,31 +2,31 @@
 // Module Imports and Dependencies
 // ============================================================================
 
-mod markdown;
 mod filestorage;
+mod markdown;
 mod parser;
 
-use serde::Deserialize;
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers},
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use filestorage::{FileStorage, Project};
 use markdown::TodoData;
 use parser::parse_markdown_file;
-use unicode_width::UnicodeWidthStr;
 use ratatui::{
+    Frame, Terminal,
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout},
     style::{Color, Style},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
-    Frame, Terminal,
 };
+use serde::Deserialize;
 use std::fs;
 use std::io;
 use std::path::PathBuf;
+use unicode_width::UnicodeWidthStr;
 
 // ============================================================================
 // Data Structures
@@ -115,7 +115,7 @@ impl TodoContent {
             completed_timestamp: None,
         }
     }
-    
+
     fn clear(&mut self) {
         self.name.clear();
         self.project_id.clear();
@@ -148,13 +148,13 @@ impl AppConfig {
         let file_storage = FileStorage::new();
         let projects = file_storage.get_projects().unwrap_or_default();
         let output_dir = file_storage.get_todos_dir().to_string_lossy().to_string();
-        
+
         AppConfig {
             output_dir,
             projects,
         }
     }
-    
+
     fn into_app(self) -> App {
         App {
             state: AppState::new(),
@@ -170,7 +170,7 @@ impl AppConfig {
 
 impl App {
     // --- Constructor Methods ---
-    
+
     fn new() -> App {
         AppConfig::new().into_app()
     }
@@ -178,34 +178,39 @@ impl App {
     fn from_file(filepath: &str) -> io::Result<App> {
         let path = PathBuf::from(filepath);
         let parsed = parse_markdown_file(&path)?;
-        
+
         let mut app = AppConfig::new().into_app();
-        
+
         // Set parsed values
         app.content.name = parsed.name;
         app.content.project_id = parsed.project_id.clone();
         app.content.info = parsed.info;
         app.content.goal = parsed.goal;
-        app.content.tasks = parsed.tasks.into_iter().map(|t| Task {
-            text: t.text,
-            completed: t.completed,
-        }).collect();
+        app.content.tasks = parsed
+            .tasks
+            .into_iter()
+            .map(|t| Task {
+                text: t.text,
+                completed: t.completed,
+            })
+            .collect();
         app.content.note = parsed.note;
         app.content.saved_filepath = Some(filepath.to_string());
         app.content.original_id = Some(parsed.id);
         app.content.original_created = Some(parsed.created);
         app.content.original_project_id = Some(parsed.project_id);
         app.state.status_message = Some(format!("Loaded: {}", filepath));
-        
+
         Ok(app)
     }
 
     fn from_json(json_str: &str) -> io::Result<App> {
-        let json_input: JsonInput = serde_json::from_str(json_str)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, format!("Invalid JSON: {}", e)))?;
-        
+        let json_input: JsonInput = serde_json::from_str(json_str).map_err(|e| {
+            io::Error::new(io::ErrorKind::InvalidInput, format!("Invalid JSON: {}", e))
+        })?;
+
         let mut app = AppConfig::new().into_app();
-        
+
         // Set values from JSON
         if let Some(name) = json_input.name {
             app.content.name = name;
@@ -220,17 +225,20 @@ impl App {
             app.content.goal = goal;
         }
         if let Some(tasks) = json_input.tasks {
-            app.content.tasks = tasks.into_iter().map(|text| Task {
-                text,
-                completed: false,
-            }).collect();
+            app.content.tasks = tasks
+                .into_iter()
+                .map(|text| Task {
+                    text,
+                    completed: false,
+                })
+                .collect();
         }
         if let Some(note) = json_input.note {
             app.content.note = note;
         }
-        
+
         app.state.status_message = Some("Loaded from JSON".to_string());
-        
+
         Ok(app)
     }
 
@@ -243,13 +251,21 @@ impl App {
     ) -> (Option<String>, Option<String>) {
         // If project didn't change, keep existing filepath and ID
         if !project_changed {
-            return (self.content.saved_filepath.clone(), self.content.original_id.clone());
+            return (
+                self.content.saved_filepath.clone(),
+                self.content.original_id.clone(),
+            );
         }
 
         // Extract the original ID if available
         let orig_id = match &self.content.original_id {
             Some(id) => id,
-            None => return (self.content.saved_filepath.clone(), self.content.original_id.clone()),
+            None => {
+                return (
+                    self.content.saved_filepath.clone(),
+                    self.content.original_id.clone(),
+                );
+            }
         };
 
         // Extract numeric ID from original ID (e.g., "WGR123" -> 123, "T00061" -> 61)
@@ -262,7 +278,12 @@ impl App {
 
         let id_num = match numeric_id {
             Some(num) => num,
-            None => return (self.content.saved_filepath.clone(), self.content.original_id.clone()),
+            None => {
+                return (
+                    self.content.saved_filepath.clone(),
+                    self.content.original_id.clone(),
+                );
+            }
         };
 
         // Generate new ID with new shorthand
@@ -272,7 +293,9 @@ impl App {
         };
 
         // Sanitize name the same way FileStorage does (preserve unicode)
-        let sanitized_name: String = self.content.name
+        let sanitized_name: String = self
+            .content
+            .name
             .chars()
             .map(|c| match c {
                 ' ' => '_',
@@ -300,12 +323,16 @@ impl App {
         }
 
         // Get selected project shorthand
-        let project_shorthand = self.state.selected_project_index
+        let project_shorthand = self
+            .state
+            .selected_project_index
             .and_then(|idx| self.config.projects.get(idx))
             .and_then(|p| p.shorthand.clone())
             .or_else(|| {
                 if !self.content.project_id.is_empty() {
-                    self.config.projects.iter()
+                    self.config
+                        .projects
+                        .iter()
                         .find(|p| p.id == self.content.project_id)
                         .and_then(|p| p.shorthand.clone())
                 } else {
@@ -314,14 +341,12 @@ impl App {
             });
 
         // Check if project changed during edit
-        let project_changed = self.content.saved_filepath.is_some() 
+        let project_changed = self.content.saved_filepath.is_some()
             && self.content.original_project_id.as_ref() != Some(&self.content.project_id);
-        
+
         let old_filepath = self.content.saved_filepath.clone();
-        let (target_filepath, updated_id) = self.calculate_target_filepath_and_id(
-            project_changed,
-            project_shorthand.as_ref(),
-        );
+        let (target_filepath, updated_id) =
+            self.calculate_target_filepath_and_id(project_changed, project_shorthand.as_ref());
 
         let todo_data = TodoData {
             name: self.content.name.clone(),
@@ -329,10 +354,15 @@ impl App {
             info: self.content.info.clone(),
             project_shorthand,
             goal: self.content.goal.clone(),
-            tasks: self.content.tasks.iter().map(|t| {
-                let prefix = if t.completed { "[x] " } else { "[ ] " };
-                format!("{}{}", prefix, t.text)
-            }).collect(),
+            tasks: self
+                .content
+                .tasks
+                .iter()
+                .map(|t| {
+                    let prefix = if t.completed { "[x] " } else { "[ ] " };
+                    format!("{}{}", prefix, t.text)
+                })
+                .collect(),
             note: self.content.note.clone(),
             existing_id: updated_id.clone(),
             existing_created: self.content.original_created.clone(),
@@ -354,7 +384,7 @@ impl App {
                     }
                     self.content.original_project_id = Some(self.content.project_id.clone());
                 }
-                
+
                 let msg = if self.content.saved_filepath.is_some() {
                     if project_changed {
                         format!("✓ Updated and moved: {}", filepath)
@@ -362,13 +392,13 @@ impl App {
                         format!("✓ Updated: {}", filepath)
                     }
                 } else {
-                    format!("✓ Saved to: {}" , filepath)
+                    format!("✓ Saved to: {}", filepath)
                 };
                 self.state.status_message = Some(msg);
-                
+
                 // Update saved filepath
                 self.content.saved_filepath = Some(filepath);
-                
+
                 // If creating a new file, clear form
                 if old_filepath.is_none() {
                     self.clear_form();
@@ -391,7 +421,10 @@ impl App {
 
     fn toggle_project_selector(&mut self) {
         self.state.show_project_selector = !self.state.show_project_selector;
-        if self.state.show_project_selector && self.state.selected_project_index.is_none() && !self.config.projects.is_empty() {
+        if self.state.show_project_selector
+            && self.state.selected_project_index.is_none()
+            && !self.config.projects.is_empty()
+        {
             self.state.selected_project_index = Some(0);
         }
     }
@@ -445,17 +478,22 @@ impl App {
 
         let source_path = self.content.saved_filepath.as_ref().unwrap();
         let source = PathBuf::from(source_path);
-        
+
         if !source.exists() {
-            return Err(io::Error::new(io::ErrorKind::NotFound, "Source file not found"));
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "Source file not found",
+            ));
         }
 
         // Set completed timestamp
         use chrono::Local;
-        self.content.completed_timestamp = Some(Local::now().format("%m-%d-%Y_%H:%M:%S").to_string());
+        self.content.completed_timestamp =
+            Some(Local::now().format("%m-%d-%Y_%H:%M:%S").to_string());
 
         // Get filename from source
-        let filename = source.file_name()
+        let filename = source
+            .file_name()
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "Invalid filename"))?
             .to_string_lossy()
             .to_string();
@@ -466,12 +504,16 @@ impl App {
         let dest = done_dir.join(&filename);
 
         // Save with completed timestamp to destination
-        let project_shorthand = self.state.selected_project_index
+        let project_shorthand = self
+            .state
+            .selected_project_index
             .and_then(|idx| self.config.projects.get(idx))
             .and_then(|p| p.shorthand.clone())
             .or_else(|| {
                 if !self.content.project_id.is_empty() {
-                    self.config.projects.iter()
+                    self.config
+                        .projects
+                        .iter()
                         .find(|p| p.id == self.content.project_id)
                         .and_then(|p| p.shorthand.clone())
                 } else {
@@ -485,10 +527,15 @@ impl App {
             info: self.content.info.clone(),
             project_shorthand,
             goal: self.content.goal.clone(),
-            tasks: self.content.tasks.iter().map(|t| {
-                let prefix = if t.completed { "[x] " } else { "[ ] " };
-                format!("{}{}", prefix, t.text)
-            }).collect(),
+            tasks: self
+                .content
+                .tasks
+                .iter()
+                .map(|t| {
+                    let prefix = if t.completed { "[x] " } else { "[ ] " };
+                    format!("{}{}", prefix, t.text)
+                })
+                .collect(),
             note: self.content.note.clone(),
             existing_id: self.content.original_id.clone(),
             existing_created: self.content.original_created.clone(),
@@ -504,7 +551,7 @@ impl App {
 
         self.state.status_message = Some(format!("✓ Moved to done: {}", filename));
         self.content.saved_filepath = Some(dest.to_string_lossy().to_string());
-        
+
         Ok(())
     }
 
@@ -528,7 +575,7 @@ impl App {
             }
             InputField::Note => InputField::Name,
         };
-        
+
         // When entering TaskList, select first task if available
         if self.state.current_field == InputField::TaskList && !self.content.tasks.is_empty() {
             self.state.selected_task_index = Some(0);
@@ -553,7 +600,7 @@ impl App {
                 InputField::TaskList
             }
         };
-        
+
         // When entering TaskList, select first task if available
         if self.state.current_field == InputField::TaskList && !self.content.tasks.is_empty() {
             self.state.selected_task_index = Some(0);
@@ -635,7 +682,7 @@ impl App {
 fn find_file_by_id(id_num: u32) -> Option<PathBuf> {
     let file_storage = FileStorage::new();
     let todos_dir = file_storage.get_todos_dir();
-    
+
     // Try to find file in todos directory
     if let Ok(entries) = fs::read_dir(&todos_dir) {
         for entry in entries.flatten() {
@@ -648,7 +695,7 @@ fn find_file_by_id(id_num: u32) -> Option<PathBuf> {
             }
         }
     }
-    
+
     // Also check done directory
     let done_dir = file_storage.get_todos_dir().parent()?.join("done");
     if let Ok(entries) = fs::read_dir(&done_dir) {
@@ -661,7 +708,7 @@ fn find_file_by_id(id_num: u32) -> Option<PathBuf> {
             }
         }
     }
-    
+
     None
 }
 
@@ -680,15 +727,18 @@ fn extract_id_from_filename(filename: &str) -> Option<u32> {
 fn main() -> Result<(), io::Error> {
     // Parse command line arguments
     let args: Vec<String> = std::env::args().collect();
-    
+
     let app = if args.len() > 1 {
         let arg = &args[1];
-        
+
         // Check for --json flag
         if arg == "--json" {
             if args.len() < 3 {
                 eprintln!("Usage: tedtui --json '<json_string>'");
-                return Err(io::Error::new(io::ErrorKind::InvalidInput, "Missing JSON string"));
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "Missing JSON string",
+                ));
             }
             let json_str = &args[2];
             match App::from_json(json_str) {
@@ -727,12 +777,15 @@ fn main() -> Result<(), io::Error> {
         // Invalid argument
         else {
             eprintln!("Usage: tedtui [--json '<json_string>'|file.md|ID]");
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "Invalid argument"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Invalid argument",
+            ));
         }
     } else {
         App::new()
     };
-    
+
     // Setup terminal
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -768,22 +821,23 @@ fn run_app<B: ratatui::backend::Backend>(
     mut app: App,
 ) -> io::Result<()> {
     loop {
-        terminal.draw(|f| ui(f, &app))
+        terminal
+            .draw(|f| ui(f, &app))
             .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{}", e)))?;
 
         if let Event::Key(key) = event::read()? {
             app.state.status_message = None; // Clear status message on any key press
-            
+
             if app.state.show_complete_confirmation {
                 handle_confirmation_dialog(&mut app, key.code);
                 continue;
             }
-            
+
             if app.state.show_project_selector {
                 handle_project_selector(&mut app, key.code);
                 continue;
             }
-            
+
             handle_main_input(&mut app, key);
         }
 
@@ -824,51 +878,54 @@ fn handle_project_selector(app: &mut App, key_code: KeyCode) {
 
 fn handle_main_input(app: &mut App, key: event::KeyEvent) {
     match key.code {
-                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    app.state.quit = true;
-                }
-                KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    app.save_to_file();
-                }
-                KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    handle_move_to_done(app);
-                }
-                KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    if matches!(app.state.current_field, InputField::ProjectId | InputField::Info) {
-                        app.toggle_project_selector();
-                    }
-                }
-                KeyCode::Esc => app.state.quit = true,
-                KeyCode::Tab => app.next_field(),
-                KeyCode::BackTab => app.previous_field(),
-                KeyCode::Enter => {
-                    if app.state.current_field == InputField::Tasks {
-                        app.add_task();
-                    }
-                }
-                KeyCode::Backspace => {
-                    if app.state.current_field != InputField::TaskList {
-                        app.get_current_input_mut().pop();
-                    }
-                }
-                KeyCode::Char(c) => {
-                    if c == ' ' && app.state.current_field == InputField::TaskList {
-                        app.toggle_task_completion();
-                    } else if app.state.current_field != InputField::TaskList {
-                        app.get_current_input_mut().push(c);
-                    }
-                }
-                KeyCode::Up if app.state.current_field == InputField::TaskList => {
-                    app.move_task_selection_up();
-                }
-                KeyCode::Down if app.state.current_field == InputField::TaskList => {
-                    app.move_task_selection_down();
-                }
-                KeyCode::Delete if app.state.current_field == InputField::TaskList => {
-                    app.delete_selected_task();
-                }
-                _ => {}
+        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.state.quit = true;
+        }
+        KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.save_to_file();
+        }
+        KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            handle_move_to_done(app);
+        }
+        KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            if matches!(
+                app.state.current_field,
+                InputField::ProjectId | InputField::Info
+            ) {
+                app.toggle_project_selector();
             }
+        }
+        KeyCode::Esc => app.state.quit = true,
+        KeyCode::Tab => app.next_field(),
+        KeyCode::BackTab => app.previous_field(),
+        KeyCode::Enter => {
+            if app.state.current_field == InputField::Tasks {
+                app.add_task();
+            }
+        }
+        KeyCode::Backspace => {
+            if app.state.current_field != InputField::TaskList {
+                app.get_current_input_mut().pop();
+            }
+        }
+        KeyCode::Char(c) => {
+            if c == ' ' && app.state.current_field == InputField::TaskList {
+                app.toggle_task_completion();
+            } else if app.state.current_field != InputField::TaskList {
+                app.get_current_input_mut().push(c);
+            }
+        }
+        KeyCode::Up if app.state.current_field == InputField::TaskList => {
+            app.move_task_selection_up();
+        }
+        KeyCode::Down if app.state.current_field == InputField::TaskList => {
+            app.move_task_selection_down();
+        }
+        KeyCode::Delete if app.state.current_field == InputField::TaskList => {
+            app.delete_selected_task();
+        }
+        _ => {}
+    }
 }
 
 fn handle_move_to_done(app: &mut App) {
@@ -887,29 +944,82 @@ fn handle_move_to_done(app: &mut App) {
 // UI Rendering
 // ============================================================================
 
+enum WidgetItem<'a> {
+    Paragraph(Paragraph<'a>, ratatui::layout::Rect),
+    List(List<'a>, ratatui::layout::Rect),
+    StatefulList(List<'a>, ListState, ratatui::layout::Rect),
+}
+
 fn ui(f: &mut Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .margin(2)
         .constraints([
-            Constraint::Length(4),  // Name
-            Constraint::Length(4),  // Project ID and Info
-            Constraint::Length(5),  // Goal
-            Constraint::Min(10),    // Tasks
-            Constraint::Length(8),  // Note
-            Constraint::Length(3),  // Help
-            Constraint::Length(2),  // Status
+            Constraint::Length(4), // Name
+            Constraint::Length(4), // Project ID and Info
+            Constraint::Length(5), // Goal
+            Constraint::Min(10),   // Tasks
+            Constraint::Length(8), // Note
+            Constraint::Length(3), // Help
+            Constraint::Length(2), // Status
         ])
         .split(f.area());
 
-    render_name_field(f, app, chunks[0]);
-    let project_info_chunks = render_project_info_fields(f, app, chunks[1]);
-    render_goal_field(f, app, chunks[2]);
-    let tasks_chunks = render_tasks_section(f, app, chunks[3]);
-    render_note_field(f, app, chunks[4]);
-    render_help(f, chunks[5]);
-    render_status_message(f, app, chunks[6]);
-    render_overlays(f, app);
+    // Collect all widgets
+    let mut widgets: Vec<WidgetItem> = Vec::new();
+
+    // Create and collect main widgets
+    let name_field = create_name_field(app, chunks[0]);
+    widgets.push(WidgetItem::Paragraph(name_field, chunks[0]));
+
+    let (project_field, info_field, project_info_chunks) =
+        create_project_info_fields(app, chunks[1]);
+    widgets.push(WidgetItem::Paragraph(project_field, project_info_chunks[0]));
+    widgets.push(WidgetItem::Paragraph(info_field, project_info_chunks[1]));
+
+    let goal_field = create_goal_field(app);
+    widgets.push(WidgetItem::Paragraph(goal_field, chunks[2]));
+
+    let (task_input_field, tasks_list, tasks_list_state, tasks_chunks) =
+        create_tasks_section(app, chunks[3]);
+    widgets.push(WidgetItem::Paragraph(task_input_field, tasks_chunks[0]));
+    widgets.push(WidgetItem::StatefulList(
+        tasks_list,
+        tasks_list_state,
+        tasks_chunks[1],
+    ));
+
+    let note_field = create_note_field(app);
+    widgets.push(WidgetItem::Paragraph(note_field, chunks[4]));
+
+    let help = create_help();
+    widgets.push(WidgetItem::Paragraph(help, chunks[5]));
+
+    if let Some(status_message) = create_status_message(app) {
+        widgets.push(WidgetItem::Paragraph(status_message, chunks[6]));
+    }
+
+    // Render overlays (these are rendered immediately due to borrowing constraints)
+    if app.state.show_project_selector {
+        let (project_selector, popup_area) = create_project_selector_overlay(app, f.area());
+        widgets.push(WidgetItem::List(project_selector, popup_area));
+    }
+    if app.state.show_complete_confirmation {
+        let (confirmation, popup_area) = create_completion_confirmation_overlay(app, f.area());
+        widgets.push(WidgetItem::Paragraph(confirmation, popup_area));
+    }
+
+    // Render all widgets
+    for widget in widgets {
+        match widget {
+            WidgetItem::Paragraph(w, area) => f.render_widget(w, area),
+            WidgetItem::List(w, area) => f.render_widget(w, area),
+            WidgetItem::StatefulList(w, mut state, area) => {
+                f.render_stateful_widget(w, area, &mut state)
+            }
+        }
+    }
+
     render_cursor(f, app, &chunks, &project_info_chunks, &tasks_chunks);
 }
 
@@ -932,20 +1042,22 @@ fn truncate_text_for_display(text: &str, max_width: usize) -> &str {
     }
 }
 
-fn render_name_field(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+fn create_name_field<'a>(app: &'a App, area: ratatui::layout::Rect) -> Paragraph<'a> {
     let is_active = app.state.current_field == InputField::Name;
     let name_block = create_input_block("Name", is_active);
     let name_text = truncate_text_for_display(&app.content.name, area.width as usize - 4);
-    let name_paragraph = Paragraph::new(name_text).block(name_block);
-    f.render_widget(name_paragraph, area);
+    Paragraph::new(name_text).block(name_block)
 }
 
-fn render_project_info_fields(f: &mut Frame, app: &App, area: ratatui::layout::Rect) -> Vec<ratatui::layout::Rect> {
+fn create_project_info_fields<'a>(
+    app: &'a App,
+    area: ratatui::layout::Rect,
+) -> (Paragraph<'a>, Paragraph<'a>, Vec<ratatui::layout::Rect>) {
     let project_info_chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
         .split(area);
-    
+
     // Project ID
     let project_title = if app.state.current_field == InputField::ProjectId {
         "Project ID (Ctrl+P to select)"
@@ -954,31 +1066,43 @@ fn render_project_info_fields(f: &mut Frame, app: &App, area: ratatui::layout::R
     };
     let is_active = app.state.current_field == InputField::ProjectId;
     let project_block = create_input_block(project_title, is_active);
-    let project_text = truncate_text_for_display(&app.content.project_id, project_info_chunks[0].width as usize - 4);
+    let project_text = truncate_text_for_display(
+        &app.content.project_id,
+        project_info_chunks[0].width as usize - 4,
+    );
     let project_paragraph = Paragraph::new(project_text).block(project_block);
-    f.render_widget(project_paragraph, project_info_chunks[0]);
-    
+
     // Info
     let is_active = app.state.current_field == InputField::Info;
     let info_block = create_input_block("Info", is_active);
-    let info_text = truncate_text_for_display(&app.content.info, project_info_chunks[1].width as usize - 4);
+    let info_text =
+        truncate_text_for_display(&app.content.info, project_info_chunks[1].width as usize - 4);
     let info_paragraph = Paragraph::new(info_text).block(info_block);
-    f.render_widget(info_paragraph, project_info_chunks[1]);
-    
-    project_info_chunks.to_vec()
 
+    (
+        project_paragraph,
+        info_paragraph,
+        project_info_chunks.to_vec(),
+    )
 }
 
-fn render_goal_field(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+fn create_goal_field<'a>(app: &'a App) -> Paragraph<'a> {
     let is_active = app.state.current_field == InputField::Goal;
     let goal_block = create_input_block("Goal / Short Description", is_active);
-    let goal_paragraph = Paragraph::new(app.content.goal.as_str())
+    Paragraph::new(app.content.goal.as_str())
         .block(goal_block)
-        .wrap(Wrap { trim: false });
-    f.render_widget(goal_paragraph, area);
+        .wrap(Wrap { trim: false })
 }
 
-fn render_tasks_section(f: &mut Frame, app: &App, area: ratatui::layout::Rect) -> Vec<ratatui::layout::Rect> {
+fn create_tasks_section<'a>(
+    app: &'a App,
+    area: ratatui::layout::Rect,
+) -> (
+    Paragraph<'a>,
+    List<'a>,
+    ListState,
+    Vec<ratatui::layout::Rect>,
+) {
     let tasks_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(3), Constraint::Min(3)])
@@ -987,13 +1111,16 @@ fn render_tasks_section(f: &mut Frame, app: &App, area: ratatui::layout::Rect) -
     // Task input
     let is_active = app.state.current_field == InputField::Tasks;
     let task_input_block = create_input_block("Add Task (Enter to add)", is_active);
-    let task_text = truncate_text_for_display(&app.content.current_task_input, tasks_chunks[0].width as usize - 4);
+    let task_text = truncate_text_for_display(
+        &app.content.current_task_input,
+        tasks_chunks[0].width as usize - 4,
+    );
     let task_input_paragraph = Paragraph::new(task_text).block(task_input_block);
-    f.render_widget(task_input_paragraph, tasks_chunks[0]);
 
     // Task list
     let task_items: Vec<ListItem> = app
-        .content.tasks
+        .content
+        .tasks
         .iter()
         .map(|task| {
             let checkbox = if task.completed { "[x]" } else { "[ ]" };
@@ -1014,24 +1141,27 @@ fn render_tasks_section(f: &mut Frame, app: &App, area: ratatui::layout::Rect) -
             is_active,
         ))
         .highlight_style(Style::default().bg(Color::DarkGray).fg(Color::White));
-    
+
     let mut list_state = ListState::default();
     list_state.select(app.state.selected_task_index);
-    f.render_stateful_widget(tasks_list, tasks_chunks[1], &mut list_state);
-    
-    tasks_chunks.to_vec()
+
+    (
+        task_input_paragraph,
+        tasks_list,
+        list_state,
+        tasks_chunks.to_vec(),
+    )
 }
 
-fn render_note_field(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+fn create_note_field<'a>(app: &'a App) -> Paragraph<'a> {
     let is_active = app.state.current_field == InputField::Note;
     let note_block = create_input_block("Note", is_active);
-    let note_paragraph = Paragraph::new(app.content.note.as_str())
+    Paragraph::new(app.content.note.as_str())
         .block(note_block)
-        .wrap(Wrap { trim: false });
-    f.render_widget(note_paragraph, area);
+        .wrap(Wrap { trim: false })
 }
 
-fn render_help(f: &mut Frame, area: ratatui::layout::Rect) {
+fn create_help() -> Paragraph<'static> {
     let help_text = Line::from(vec![
         Span::styled("Tab", Style::default().fg(Color::Cyan)),
         Span::raw(" / "),
@@ -1048,13 +1178,11 @@ fn render_help(f: &mut Frame, area: ratatui::layout::Rect) {
         Span::styled("Esc", Style::default().fg(Color::Cyan)),
         Span::raw(" - Quit"),
     ]);
-    let help = Paragraph::new(help_text)
-        .block(Block::default().borders(Borders::ALL).title("Help"));
-    f.render_widget(help, area);
+    Paragraph::new(help_text).block(Block::default().borders(Borders::ALL).title("Help"))
 }
 
-fn render_status_message(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
-    if let Some(ref msg) = app.state.status_message {
+fn create_status_message<'a>(app: &'a App) -> Option<Paragraph<'a>> {
+    app.state.status_message.as_ref().map(|msg| {
         let status_color = if msg.contains("✓") {
             Color::Green
         } else if msg.contains("✗") {
@@ -1062,37 +1190,31 @@ fn render_status_message(f: &mut Frame, app: &App, area: ratatui::layout::Rect) 
         } else {
             Color::Yellow
         };
-        let status = Paragraph::new(msg.as_str())
+        Paragraph::new(msg.as_str())
             .style(Style::default().fg(status_color))
-            .wrap(Wrap { trim: false });
-        f.render_widget(status, area);
-    }
+            .wrap(Wrap { trim: false })
+    })
 }
 
-fn render_overlays(f: &mut Frame, app: &App) {
-    if app.state.show_project_selector {
-        render_project_selector_overlay(f, app);
-    }
-    if app.state.show_complete_confirmation {
-        render_completion_confirmation_overlay(f, app);
-    }
-}
+fn create_project_selector_overlay<'a>(
+    app: &'a App,
+    frame_area: ratatui::layout::Rect,
+) -> (List<'a>, ratatui::layout::Rect) {
+    let popup_width = frame_area.width.saturating_sub(20).max(40);
+    let popup_height = frame_area.height.saturating_sub(10).max(15).min(30);
+    let popup_x = (frame_area.width.saturating_sub(popup_width)) / 2;
+    let popup_y = (frame_area.height.saturating_sub(popup_height)) / 2;
 
-fn render_project_selector_overlay(f: &mut Frame, app: &App) {
-    let popup_width = f.area().width.saturating_sub(20).max(40);
-    let popup_height = f.area().height.saturating_sub(10).max(15).min(30);
-    let popup_x = (f.area().width.saturating_sub(popup_width)) / 2;
-    let popup_y = (f.area().height.saturating_sub(popup_height)) / 2;
-    
     let popup_area = ratatui::layout::Rect {
         x: popup_x,
         y: popup_y,
         width: popup_width,
         height: popup_height,
     };
-    
+
     let project_items: Vec<ListItem> = app
-        .config.projects
+        .config
+        .projects
         .iter()
         .enumerate()
         .map(|(i, project)| {
@@ -1109,7 +1231,7 @@ fn render_project_selector_overlay(f: &mut Frame, app: &App) {
             ListItem::new(text).style(style)
         })
         .collect();
-    
+
     let projects_list = List::new(project_items)
         .block(
             Block::default()
@@ -1118,45 +1240,51 @@ fn render_project_selector_overlay(f: &mut Frame, app: &App) {
                 .border_style(Style::default().fg(Color::Yellow)),
         )
         .style(Style::default().bg(Color::Black));
-    
-    f.render_widget(projects_list, popup_area);
+
+    (projects_list, popup_area)
 }
 
-fn render_completion_confirmation_overlay(f: &mut Frame, app: &App) {
+fn create_completion_confirmation_overlay<'a>(
+    app: &'a App,
+    frame_area: ratatui::layout::Rect,
+) -> (Paragraph<'a>, ratatui::layout::Rect) {
     let popup_width = 60;
     let popup_height = 7;
-    let popup_x = (f.area().width.saturating_sub(popup_width)) / 2;
-    let popup_y = (f.area().height.saturating_sub(popup_height)) / 2;
-    
+    let popup_x = (frame_area.width.saturating_sub(popup_width)) / 2;
+    let popup_y = (frame_area.height.saturating_sub(popup_height)) / 2;
+
     let popup_area = ratatui::layout::Rect {
         x: popup_x,
         y: popup_y,
         width: popup_width,
         height: popup_height,
     };
-    
+
     let incomplete_count = app.content.tasks.iter().filter(|t| !t.completed).count();
     let message = vec![
         Line::from(""),
         Line::from(Span::styled(
             format!("You have {} incomplete task(s).", incomplete_count),
-            Style::default().fg(Color::White)
+            Style::default().fg(Color::White),
         )),
         Line::from(""),
         Line::from(Span::styled(
             "Mark all tasks as complete before moving to done?",
-            Style::default().fg(Color::Yellow)
+            Style::default().fg(Color::Yellow),
         )),
         Line::from(""),
         Line::from(vec![
             Span::styled("Press ", Style::default().fg(Color::White)),
             Span::styled("Y", Style::default().fg(Color::Green)),
-            Span::styled(" to mark complete and move, ", Style::default().fg(Color::White)),
+            Span::styled(
+                " to mark complete and move, ",
+                Style::default().fg(Color::White),
+            ),
             Span::styled("N", Style::default().fg(Color::Red)),
             Span::styled(" to cancel", Style::default().fg(Color::White)),
         ]),
     ];
-    
+
     let confirmation = Paragraph::new(message)
         .block(
             Block::default()
@@ -1166,8 +1294,8 @@ fn render_completion_confirmation_overlay(f: &mut Frame, app: &App) {
         )
         .style(Style::default().bg(Color::Black))
         .wrap(Wrap { trim: false });
-    
-    f.render_widget(confirmation, popup_area);
+
+    (confirmation, popup_area)
 }
 
 fn calculate_cursor_x(text: &str, area_x: u16, area_width: u16) -> u16 {
@@ -1192,11 +1320,19 @@ fn render_cursor(
             f.set_cursor_position((cursor_x, chunks[0].y + 1));
         }
         InputField::ProjectId => {
-            let cursor_x = calculate_cursor_x(&app.content.project_id, project_info_chunks[0].x, project_info_chunks[0].width);
+            let cursor_x = calculate_cursor_x(
+                &app.content.project_id,
+                project_info_chunks[0].x,
+                project_info_chunks[0].width,
+            );
             f.set_cursor_position((cursor_x, project_info_chunks[0].y + 1));
         }
         InputField::Info => {
-            let cursor_x = calculate_cursor_x(&app.content.info, project_info_chunks[1].x, project_info_chunks[1].width);
+            let cursor_x = calculate_cursor_x(
+                &app.content.info,
+                project_info_chunks[1].x,
+                project_info_chunks[1].width,
+            );
             f.set_cursor_position((cursor_x, project_info_chunks[1].y + 1));
         }
         InputField::Goal => {
@@ -1204,7 +1340,11 @@ fn render_cursor(
             f.set_cursor_position((cursor_x, chunks[2].y + 1));
         }
         InputField::Tasks => {
-            let cursor_x = calculate_cursor_x(&app.content.current_task_input, tasks_chunks[0].x, tasks_chunks[0].width);
+            let cursor_x = calculate_cursor_x(
+                &app.content.current_task_input,
+                tasks_chunks[0].x,
+                tasks_chunks[0].width,
+            );
             f.set_cursor_position((cursor_x, tasks_chunks[0].y + 1));
         }
         InputField::TaskList => {
