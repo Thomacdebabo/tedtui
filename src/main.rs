@@ -42,6 +42,20 @@ struct JsonInput {
     note: Option<String>,
 }
 
+impl JsonInput {
+    fn print_schema() {
+        eprintln!("JSON Schema:");
+        eprintln!("{{");
+        eprintln!("  \"name\": \"string (optional)\",");
+        eprintln!("  \"project_id\": \"string (optional)\",");
+        eprintln!("  \"info\": \"string (optional)\",");
+        eprintln!("  \"goal\": \"string (optional)\",");
+        eprintln!("  \"tasks\": [\"task1\", \"task2\"] (optional array of strings),");
+        eprintln!("  \"note\": \"string (optional)\"");
+        eprintln!("}}");
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 enum InputField {
     Name,
@@ -67,6 +81,8 @@ struct AppState {
     show_complete_confirmation: bool,
     show_history_viewer: bool,
     history_scroll_offset: usize,
+    goal_scroll_offset: usize,
+    note_scroll_offset: usize,
     quit: bool,
     status_message: Option<String>,
 }
@@ -81,6 +97,8 @@ impl AppState {
             show_complete_confirmation: false,
             show_history_viewer: false,
             history_scroll_offset: 0,
+            goal_scroll_offset: 0,
+            note_scroll_offset: 0,
             quit: false,
             status_message: None,
         }
@@ -611,6 +629,14 @@ impl App {
         if self.state.current_field == InputField::TaskList && !self.content.tasks.is_empty() {
             self.state.selected_task_index = Some(0);
         }
+
+        // When entering Goal or Note, auto-adjust scroll to show cursor
+        if matches!(
+            self.state.current_field,
+            InputField::Goal | InputField::Note
+        ) {
+            self.auto_adjust_scroll();
+        }
     }
 
     fn previous_field(&mut self) {
@@ -635,6 +661,14 @@ impl App {
         // When entering TaskList, select first task if available
         if self.state.current_field == InputField::TaskList && !self.content.tasks.is_empty() {
             self.state.selected_task_index = Some(0);
+        }
+
+        // When entering Goal or Note, auto-adjust scroll to show cursor
+        if matches!(
+            self.state.current_field,
+            InputField::Goal | InputField::Note
+        ) {
+            self.auto_adjust_scroll();
         }
     }
 
@@ -716,6 +750,32 @@ impl App {
             });
         }
     }
+
+    // --- Scroll Management Methods ---
+
+    fn auto_adjust_scroll(&mut self) {
+        match self.state.current_field {
+            InputField::Goal => {
+                let line_count = self.content.goal.lines().count();
+                let max_visible = 3;
+
+                // If cursor (last line) is below visible area, scroll down
+                if line_count > self.state.goal_scroll_offset + max_visible {
+                    self.state.goal_scroll_offset = line_count.saturating_sub(max_visible);
+                }
+            }
+            InputField::Note => {
+                let line_count = self.content.note.lines().count();
+                let max_visible = 6;
+
+                // If cursor (last line) is below visible area, scroll down
+                if line_count > self.state.note_scroll_offset + max_visible {
+                    self.state.note_scroll_offset = line_count.saturating_sub(max_visible);
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 // ============================================================================
@@ -775,6 +835,13 @@ fn main() -> Result<(), io::Error> {
         if arg == "--json" {
             if args.len() < 3 {
                 eprintln!("Usage: tedtui --json '<json_string>'");
+                eprintln!();
+                JsonInput::print_schema();
+                eprintln!();
+                eprintln!("Example:");
+                eprintln!(
+                    "  tedtui --json '{{\"name\":\"My Task\",\"tasks\":[\"Step 1\",\"Step 2\"]}}'\n"
+                );
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
                     "Missing JSON string",
@@ -817,6 +884,13 @@ fn main() -> Result<(), io::Error> {
         // Invalid argument
         else {
             eprintln!("Usage: tedtui [--json '<json_string>'|file.md|ID]");
+            eprintln!();
+            eprintln!("Options:");
+            eprintln!("  --json '<json_string>'  Create todo from JSON input");
+            eprintln!("  file.md                 Load existing markdown file");
+            eprintln!("  ID                      Load todo by numeric ID");
+            eprintln!();
+            JsonInput::print_schema();
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "Invalid argument",
@@ -979,6 +1053,9 @@ fn handle_main_input(app: &mut App, key: event::KeyEvent) {
         KeyCode::Enter => {
             if app.state.current_field == InputField::Tasks {
                 app.add_task();
+            } else if matches!(app.state.current_field, InputField::Goal | InputField::Note) {
+                app.get_current_input_mut().push('\n');
+                app.auto_adjust_scroll();
             }
         }
         KeyCode::Backspace => {
@@ -991,13 +1068,41 @@ fn handle_main_input(app: &mut App, key: event::KeyEvent) {
                 app.toggle_task_completion();
             } else if app.state.current_field != InputField::TaskList {
                 app.get_current_input_mut().push(c);
+                // Auto-adjust scroll when typing in multiline fields
+                if matches!(app.state.current_field, InputField::Goal | InputField::Note) {
+                    app.auto_adjust_scroll();
+                }
             }
         }
-        KeyCode::Up if app.state.current_field == InputField::TaskList => {
-            app.move_task_selection_up();
+        KeyCode::Up => {
+            if app.state.current_field == InputField::TaskList {
+                app.move_task_selection_up();
+            } else if app.state.current_field == InputField::Goal {
+                if app.state.goal_scroll_offset > 0 {
+                    app.state.goal_scroll_offset -= 1;
+                }
+            } else if app.state.current_field == InputField::Note {
+                if app.state.note_scroll_offset > 0 {
+                    app.state.note_scroll_offset -= 1;
+                }
+            }
         }
-        KeyCode::Down if app.state.current_field == InputField::TaskList => {
-            app.move_task_selection_down();
+        KeyCode::Down => {
+            if app.state.current_field == InputField::TaskList {
+                app.move_task_selection_down();
+            } else if app.state.current_field == InputField::Goal {
+                let line_count = app.content.goal.lines().count();
+                let max_scroll = line_count.saturating_sub(3); // 3 visible lines in Goal
+                if app.state.goal_scroll_offset < max_scroll {
+                    app.state.goal_scroll_offset += 1;
+                }
+            } else if app.state.current_field == InputField::Note {
+                let line_count = app.content.note.lines().count();
+                let max_scroll = line_count.saturating_sub(6); // 6 visible lines in Note
+                if app.state.note_scroll_offset < max_scroll {
+                    app.state.note_scroll_offset += 1;
+                }
+            }
         }
         KeyCode::Delete if app.state.current_field == InputField::TaskList => {
             app.delete_selected_task();
@@ -1175,8 +1280,19 @@ fn create_project_info_fields<'a>(
 
 fn create_goal_field<'a>(app: &'a App) -> Paragraph<'a> {
     let is_active = app.state.current_field == InputField::Goal;
-    let goal_block = create_input_block("Goal / Short Description", is_active);
-    Paragraph::new(app.content.goal.as_str())
+
+    // Get visible lines based on scroll offset
+    let lines: Vec<&str> = app.content.goal.lines().collect();
+    let visible_lines: Vec<&str> = lines
+        .iter()
+        .skip(app.state.goal_scroll_offset)
+        .take(3) // Goal has 3 visible lines
+        .copied()
+        .collect();
+    let visible_text = visible_lines.join("\n");
+
+    let goal_block = create_input_block("Goal / Short Description (↑↓ to scroll)", is_active);
+    Paragraph::new(visible_text)
         .block(goal_block)
         .wrap(Wrap { trim: false })
 }
@@ -1242,8 +1358,19 @@ fn create_tasks_section<'a>(
 
 fn create_note_field<'a>(app: &'a App) -> Paragraph<'a> {
     let is_active = app.state.current_field == InputField::Note;
-    let note_block = create_input_block("Note", is_active);
-    Paragraph::new(app.content.note.as_str())
+
+    // Get visible lines based on scroll offset
+    let lines: Vec<&str> = app.content.note.lines().collect();
+    let visible_lines: Vec<&str> = lines
+        .iter()
+        .skip(app.state.note_scroll_offset)
+        .take(6) // Note has 6 visible lines
+        .copied()
+        .collect();
+    let visible_text = visible_lines.join("\n");
+
+    let note_block = create_input_block("Note (↑↓ to scroll)", is_active);
+    Paragraph::new(visible_text)
         .block(note_block)
         .wrap(Wrap { trim: false })
 }
@@ -1474,6 +1601,42 @@ fn calculate_cursor_x(text: &str, area_x: u16, area_width: u16) -> u16 {
     }
 }
 
+fn calculate_multiline_cursor_position(
+    text: &str,
+    area_x: u16,
+    area_y: u16,
+    area_width: u16,
+    scroll_offset: usize,
+    max_visible_lines: usize,
+) -> (u16, u16) {
+    let lines: Vec<&str> = text.split('\n').collect();
+    let line_count = lines.len();
+
+    // Get the last line (where the cursor is)
+    let last_line = lines.last().unwrap_or(&"");
+    let last_line_width = last_line.width();
+
+    // Calculate the visible line index (0-based within the visible area)
+    // The cursor is always at the last line
+    let cursor_line_index = line_count.saturating_sub(1);
+    let visible_line_index = cursor_line_index.saturating_sub(scroll_offset);
+
+    // Clamp the visible line index within the visible area
+    let clamped_visible_index = visible_line_index.min(max_visible_lines.saturating_sub(1));
+
+    // Calculate Y position (line number within the widget, adding 1 for border)
+    let cursor_y = area_y + clamped_visible_index as u16 + 1;
+
+    // Calculate X position (column within the last line)
+    let cursor_x = if last_line_width > (area_width - 3) as usize {
+        area_x + area_width - 2
+    } else {
+        area_x + last_line_width as u16 + 1
+    };
+
+    (cursor_x, cursor_y)
+}
+
 fn render_cursor(
     f: &mut Frame,
     app: &App,
@@ -1503,8 +1666,15 @@ fn render_cursor(
             f.set_cursor_position((cursor_x, project_info_chunks[1].y + 1));
         }
         InputField::Goal => {
-            let cursor_x = calculate_cursor_x(&app.content.goal, chunks[2].x, chunks[2].width);
-            f.set_cursor_position((cursor_x, chunks[2].y + 1));
+            let (cursor_x, cursor_y) = calculate_multiline_cursor_position(
+                &app.content.goal,
+                chunks[2].x,
+                chunks[2].y,
+                chunks[2].width,
+                app.state.goal_scroll_offset,
+                3, // 3 visible lines in Goal
+            );
+            f.set_cursor_position((cursor_x, cursor_y));
         }
         InputField::Tasks => {
             let cursor_x = calculate_cursor_x(
@@ -1526,8 +1696,15 @@ fn render_cursor(
             }
         }
         InputField::Note => {
-            let cursor_x = calculate_cursor_x(&app.content.note, chunks[4].x, chunks[4].width);
-            f.set_cursor_position((cursor_x, chunks[4].y + 1));
+            let (cursor_x, cursor_y) = calculate_multiline_cursor_position(
+                &app.content.note,
+                chunks[4].x,
+                chunks[4].y,
+                chunks[4].width,
+                app.state.note_scroll_offset,
+                6, // 6 visible lines in Note
+            );
+            f.set_cursor_position((cursor_x, cursor_y));
         }
     }
 }
