@@ -754,23 +754,29 @@ impl App {
     // --- Scroll Management Methods ---
 
     fn auto_adjust_scroll(&mut self) {
+        // Estimate available width (typical terminal minus margins and borders)
+        // This is conservative; actual width may vary
+        let estimated_width = 100; // Reasonable estimate for wrapping calculations
+
         match self.state.current_field {
             InputField::Goal => {
-                let line_count = self.content.goal.lines().count();
+                let display_line_count =
+                    count_display_lines_with_wrapping(&self.content.goal, estimated_width);
                 let max_visible = 3;
 
                 // If cursor (last line) is below visible area, scroll down
-                if line_count > self.state.goal_scroll_offset + max_visible {
-                    self.state.goal_scroll_offset = line_count.saturating_sub(max_visible);
+                if display_line_count > self.state.goal_scroll_offset + max_visible {
+                    self.state.goal_scroll_offset = display_line_count.saturating_sub(max_visible);
                 }
             }
             InputField::Note => {
-                let line_count = self.content.note.lines().count();
+                let display_line_count =
+                    count_display_lines_with_wrapping(&self.content.note, estimated_width);
                 let max_visible = 6;
 
                 // If cursor (last line) is below visible area, scroll down
-                if line_count > self.state.note_scroll_offset + max_visible {
-                    self.state.note_scroll_offset = line_count.saturating_sub(max_visible);
+                if display_line_count > self.state.note_scroll_offset + max_visible {
+                    self.state.note_scroll_offset = display_line_count.saturating_sub(max_visible);
                 }
             }
             _ => {}
@@ -781,6 +787,21 @@ impl App {
 // ============================================================================
 // Utility Helper Functions
 // ============================================================================
+
+fn count_display_lines_with_wrapping(text: &str, available_width: usize) -> usize {
+    if available_width == 0 {
+        return text.lines().count();
+    }
+
+    let mut total = 0;
+    for line in text.lines() {
+        let line_width = line.width();
+
+        total += (line_width / available_width) + 1;
+    }
+    total.max(1)
+}
+
 fn find_file_by_id_in_directory(dir: &PathBuf, id_num: u32) -> Option<PathBuf> {
     if let Ok(entries) = fs::read_dir(dir) {
         for entry in entries.flatten() {
@@ -1091,14 +1112,18 @@ fn handle_main_input(app: &mut App, key: event::KeyEvent) {
             if app.state.current_field == InputField::TaskList {
                 app.move_task_selection_down();
             } else if app.state.current_field == InputField::Goal {
-                let line_count = app.content.goal.lines().count();
-                let max_scroll = line_count.saturating_sub(3); // 3 visible lines in Goal
+                let estimated_width = 100;
+                let display_line_count =
+                    count_display_lines_with_wrapping(&app.content.goal, estimated_width);
+                let max_scroll = display_line_count.saturating_sub(3); // 3 visible lines in Goal
                 if app.state.goal_scroll_offset < max_scroll {
                     app.state.goal_scroll_offset += 1;
                 }
             } else if app.state.current_field == InputField::Note {
-                let line_count = app.content.note.lines().count();
-                let max_scroll = line_count.saturating_sub(6); // 6 visible lines in Note
+                let estimated_width = 100;
+                let display_line_count =
+                    count_display_lines_with_wrapping(&app.content.note, estimated_width);
+                let max_scroll = display_line_count.saturating_sub(6); // 6 visible lines in Note
                 if app.state.note_scroll_offset < max_scroll {
                     app.state.note_scroll_offset += 1;
                 }
@@ -1289,7 +1314,11 @@ fn create_goal_field<'a>(app: &'a App) -> Paragraph<'a> {
         .take(3) // Goal has 3 visible lines
         .copied()
         .collect();
-    let visible_text = visible_lines.join("\n");
+    let mut visible_text = visible_lines.join("\n");
+
+    if is_active {
+        visible_text.push('█');
+    }
 
     let goal_block = create_input_block("Goal / Short Description (↑↓ to scroll)", is_active);
     Paragraph::new(visible_text)
@@ -1367,9 +1396,13 @@ fn create_note_field<'a>(app: &'a App) -> Paragraph<'a> {
         .take(6) // Note has 6 visible lines
         .copied()
         .collect();
-    let visible_text = visible_lines.join("\n");
+    let mut visible_text = visible_lines.join("\n");
 
-    let note_block = create_input_block("Note (↑↓ to scroll)", is_active);
+    let note_block: Block<'_> = create_input_block("Note (↑↓ to scroll)", is_active);
+
+    if is_active {
+        visible_text.push('█');
+    }
     Paragraph::new(visible_text)
         .block(note_block)
         .wrap(Wrap { trim: false })
@@ -1601,42 +1634,6 @@ fn calculate_cursor_x(text: &str, area_x: u16, area_width: u16) -> u16 {
     }
 }
 
-fn calculate_multiline_cursor_position(
-    text: &str,
-    area_x: u16,
-    area_y: u16,
-    area_width: u16,
-    scroll_offset: usize,
-    max_visible_lines: usize,
-) -> (u16, u16) {
-    let lines: Vec<&str> = text.split('\n').collect();
-    let line_count = lines.len();
-
-    // Get the last line (where the cursor is)
-    let last_line = lines.last().unwrap_or(&"");
-    let last_line_width = last_line.width();
-
-    // Calculate the visible line index (0-based within the visible area)
-    // The cursor is always at the last line
-    let cursor_line_index = line_count.saturating_sub(1);
-    let visible_line_index = cursor_line_index.saturating_sub(scroll_offset);
-
-    // Clamp the visible line index within the visible area
-    let clamped_visible_index = visible_line_index.min(max_visible_lines.saturating_sub(1));
-
-    // Calculate Y position (line number within the widget, adding 1 for border)
-    let cursor_y = area_y + clamped_visible_index as u16 + 1;
-
-    // Calculate X position (column within the last line)
-    let cursor_x = if last_line_width > (area_width - 3) as usize {
-        area_x + area_width - 2
-    } else {
-        area_x + last_line_width as u16 + 1
-    };
-
-    (cursor_x, cursor_y)
-}
-
 fn render_cursor(
     f: &mut Frame,
     app: &App,
@@ -1644,10 +1641,11 @@ fn render_cursor(
     project_info_chunks: &[ratatui::layout::Rect],
     tasks_chunks: &[ratatui::layout::Rect],
 ) {
+    let mut cursor_position: Option<(u16, u16)> = None;
     match app.state.current_field {
         InputField::Name => {
             let cursor_x = calculate_cursor_x(&app.content.name, chunks[0].x, chunks[0].width);
-            f.set_cursor_position((cursor_x, chunks[0].y + 1));
+            cursor_position = Some((cursor_x, chunks[0].y + 1));
         }
         InputField::ProjectId => {
             let cursor_x = calculate_cursor_x(
@@ -1655,7 +1653,7 @@ fn render_cursor(
                 project_info_chunks[0].x,
                 project_info_chunks[0].width,
             );
-            f.set_cursor_position((cursor_x, project_info_chunks[0].y + 1));
+            cursor_position = Some((cursor_x, project_info_chunks[0].y + 1));
         }
         InputField::Info => {
             let cursor_x = calculate_cursor_x(
@@ -1663,48 +1661,31 @@ fn render_cursor(
                 project_info_chunks[1].x,
                 project_info_chunks[1].width,
             );
-            f.set_cursor_position((cursor_x, project_info_chunks[1].y + 1));
+            cursor_position = Some((cursor_x, project_info_chunks[1].y + 1));
         }
-        InputField::Goal => {
-            let (cursor_x, cursor_y) = calculate_multiline_cursor_position(
-                &app.content.goal,
-                chunks[2].x,
-                chunks[2].y,
-                chunks[2].width,
-                app.state.goal_scroll_offset,
-                3, // 3 visible lines in Goal
-            );
-            f.set_cursor_position((cursor_x, cursor_y));
-        }
+        InputField::Goal => { /*  cursor is just appended to text */ }
         InputField::Tasks => {
             let cursor_x = calculate_cursor_x(
                 &app.content.current_task_input,
                 tasks_chunks[0].x,
                 tasks_chunks[0].width,
             );
-            f.set_cursor_position((cursor_x, tasks_chunks[0].y + 1));
+            cursor_position = Some((cursor_x, tasks_chunks[0].y + 1));
         }
         InputField::TaskList => {
             // Position cursor at the selected task in the list
             if let Some(selected_idx) = app.state.selected_task_index {
                 let cursor_x = tasks_chunks[1].x + 1;
                 let cursor_y = tasks_chunks[1].y + 1 + selected_idx as u16;
-                f.set_cursor_position((cursor_x, cursor_y));
+                cursor_position = Some((cursor_x, cursor_y));
             } else {
                 // No task selected, position at the start of the task list
-                f.set_cursor_position((tasks_chunks[1].x + 1, tasks_chunks[1].y + 1));
+                cursor_position = Some((tasks_chunks[1].x + 1, tasks_chunks[1].y + 1));
             }
         }
-        InputField::Note => {
-            let (cursor_x, cursor_y) = calculate_multiline_cursor_position(
-                &app.content.note,
-                chunks[4].x,
-                chunks[4].y,
-                chunks[4].width,
-                app.state.note_scroll_offset,
-                6, // 6 visible lines in Note
-            );
-            f.set_cursor_position((cursor_x, cursor_y));
-        }
+        InputField::Note => { /*  cursor is just appended to text */ }
+    }
+    if let Some(cursor) = cursor_position {
+        f.set_cursor_position(cursor);
     }
 }

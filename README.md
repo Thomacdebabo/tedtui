@@ -1,5 +1,14 @@
 # tedtui
 
+# Vibe Coding update
+I am finally at the point where I cannot let Claude do more work on this. I am impressed how far it got, but now it is time for me to understand how to actually build tuis myself. 
+
+The code is quite messy, unnecessarily complex and there are way too many lines in the main file. 
+
+At least I know got code that does what I want so I can get more familiar with rust and how it works.
+
+# Overview
+
 A terminal UI for quickly creating and managing Ted todos.
 
 ## Features
