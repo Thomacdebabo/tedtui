@@ -2,6 +2,7 @@
 // UI Rendering
 // ============================================================================
 
+use crate::app::NewProjectStep;
 use crate::{App, InputField};
 use ratatui::{
     Frame,
@@ -69,6 +70,11 @@ pub fn ui(f: &mut Frame, app: &App) {
     }
 
     // Render overlays (these are rendered immediately due to borrowing constraints)
+    if app.state.show_new_project_dialog {
+        let (new_project_overlay, popup_area) = create_new_project_overlay(app, f.area());
+        widgets.push(WidgetItem::Clear(popup_area));
+        widgets.push(WidgetItem::Paragraph(new_project_overlay, popup_area));
+    }
     if app.state.show_project_selector {
         let (project_selector, popup_area) = create_project_selector_overlay(app, f.area());
         widgets.push(WidgetItem::Clear(popup_area));
@@ -305,6 +311,103 @@ fn create_status_message<'a>(app: &'a App) -> Option<Paragraph<'a>> {
     })
 }
 
+fn create_new_project_overlay<'a>(
+    app: &'a App,
+    frame_area: ratatui::layout::Rect,
+) -> (Paragraph<'a>, ratatui::layout::Rect) {
+    let popup_width = frame_area.width.saturating_sub(20).min(70).max(50);
+    let popup_height = 14u16;
+    let popup_x = (frame_area.width.saturating_sub(popup_width)) / 2;
+    let popup_y = (frame_area.height.saturating_sub(popup_height)) / 2;
+
+    let popup_area = ratatui::layout::Rect {
+        x: popup_x,
+        y: popup_y,
+        width: popup_width,
+        height: popup_height,
+    };
+
+    let active = Style::default().fg(Color::Yellow).bg(Color::Black);
+    let inactive = Style::default().fg(Color::White).bg(Color::Black);
+    let label = Style::default().fg(Color::Green).bg(Color::Black);
+
+    let name_style = if app.state.new_project_step == NewProjectStep::Name {
+        active
+    } else {
+        inactive
+    };
+    let desc_style = if app.state.new_project_step == NewProjectStep::Description {
+        active
+    } else {
+        inactive
+    };
+    let short_style = if app.state.new_project_step == NewProjectStep::Shorthand {
+        active
+    } else {
+        inactive
+    };
+
+    let mut name_val = app.state.new_project_name.clone();
+    let mut desc_val = app.state.new_project_description.clone();
+    let mut short_val = app.state.new_project_shorthand.clone();
+
+    if app.state.new_project_step == NewProjectStep::Name {
+        name_val.push('\u{2588}');
+    }
+    if app.state.new_project_step == NewProjectStep::Description {
+        desc_val.push('\u{2588}');
+    }
+    if app.state.new_project_step == NewProjectStep::Shorthand {
+        short_val.push('\u{2588}');
+    }
+
+    let mut lines = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  Name        : ", label),
+            Span::styled(name_val, name_style),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  Description : ", label),
+            Span::styled(desc_val, desc_style),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  Shorthand   : ", label),
+            Span::styled(short_val, short_style),
+        ]),
+        Line::from(Span::styled(
+            "  (3-8 uppercase chars, optional)",
+            Style::default().fg(Color::Gray),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  Tab/Enter \u{2502} next    Shift+Tab \u{2502} back    Esc \u{2502} cancel",
+            Style::default().fg(Color::Cyan),
+        )),
+    ];
+
+    if let Some(ref err) = app.state.new_project_error {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            format!("  \u{2717} {}", err),
+            Style::default().fg(Color::Red),
+        )));
+    }
+
+    let overlay = Paragraph::new(lines)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" New Project ")
+                .border_style(Style::default().fg(Color::Green)),
+        )
+        .style(Style::default().bg(Color::Black));
+
+    (overlay, popup_area)
+}
+
 fn create_project_selector_overlay<'a>(
     app: &'a App,
     frame_area: ratatui::layout::Rect,
@@ -345,7 +448,7 @@ fn create_project_selector_overlay<'a>(
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title("Select Project (↑↓ to navigate, Enter to select, Esc to cancel)")
+                .title("Select Project (↑↓ Navigate, Enter Select, N New, Esc Cancel)")
                 .border_style(Style::default().fg(Color::Yellow)),
         )
         .style(Style::default().bg(Color::Black));

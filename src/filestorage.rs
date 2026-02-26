@@ -1,3 +1,4 @@
+use chrono::Local;
 use regex::Regex;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -189,6 +190,78 @@ impl FileStorage {
             })
             .collect::<String>()
             .to_lowercase()
+    }
+
+    /// Get the next available project ID by scanning the projects folder
+    pub fn get_next_project_id(&self) -> Result<u32, std::io::Error> {
+        let mut max_id = 0u32;
+        let projects_dir = self.ted_root.join("projects");
+
+        if let Ok(entries) = fs::read_dir(projects_dir) {
+            let re = Regex::new(r"^P(\d+)").unwrap();
+            for entry in entries.flatten() {
+                let filename = entry.file_name().to_string_lossy().to_string();
+                if let Some(caps) = re.captures(&filename) {
+                    if let Some(id_str) = caps.get(1) {
+                        if let Ok(id) = id_str.as_str().parse::<u32>() {
+                            max_id = max_id.max(id);
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(max_id + 1)
+    }
+
+    /// Create a new project file and return the file path
+    pub fn create_project(
+        &self,
+        name: &str,
+        description: &str,
+        shorthand: &str,
+    ) -> Result<PathBuf, std::io::Error> {
+        let projects_dir = self.ted_root.join("projects");
+        fs::create_dir_all(&projects_dir)?;
+
+        let next_id = self.get_next_project_id()?;
+        let id = format!("P{:05}", next_id);
+
+        // Build filename: P00005_SHORTHAND_sanitized_name.md or P00005_sanitized_name.md
+        let sanitized = self.sanitize_name(name);
+        let filename = if !shorthand.is_empty() {
+            format!("{}_{}_{}.md", id, shorthand, sanitized)
+        } else {
+            format!("{}_{}.md", id, sanitized)
+        };
+
+        // Build heading: "# SHORTHAND: Name" or "# Name"
+        let heading = if !shorthand.is_empty() {
+            format!("# {}: {}", shorthand, name)
+        } else {
+            format!("# {}", name)
+        };
+
+        let timestamp = Local::now().format("%m-%d-%Y_%H:%M:%S").to_string();
+
+        let mut content = String::new();
+        content.push_str("---\n");
+        content.push_str("completed: null\n");
+        content.push_str(&format!("created: {}\n", timestamp));
+        content.push_str(&format!("id: {}\n", id));
+        content.push_str("project_id: null\n");
+        content.push_str("tags: []\n");
+        content.push_str("---\n");
+        content.push_str(&format!("{}\n", heading));
+        if !description.is_empty() {
+            content.push_str(&format!("{}\n", description));
+        }
+        content.push_str("# Info \n");
+
+        let filepath = projects_dir.join(&filename);
+        fs::write(&filepath, content)?;
+
+        Ok(filepath)
     }
 
     /// Get the todos directory path

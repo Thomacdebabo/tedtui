@@ -53,6 +53,13 @@ pub enum InputField {
     Note,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum NewProjectStep {
+    Name,
+    Description,
+    Shorthand,
+}
+
 #[derive(Debug, Clone)]
 pub struct Task {
     pub text: String,
@@ -66,6 +73,12 @@ pub struct AppState {
     pub show_project_selector: bool,
     pub show_complete_confirmation: bool,
     pub show_history_viewer: bool,
+    pub show_new_project_dialog: bool,
+    pub new_project_step: NewProjectStep,
+    pub new_project_name: String,
+    pub new_project_description: String,
+    pub new_project_shorthand: String,
+    pub new_project_error: Option<String>,
     pub history_scroll_offset: usize,
     pub goal_scroll_offset: usize,
     pub note_scroll_offset: usize,
@@ -82,6 +95,12 @@ impl AppState {
             show_project_selector: false,
             show_complete_confirmation: false,
             show_history_viewer: false,
+            show_new_project_dialog: false,
+            new_project_step: NewProjectStep::Name,
+            new_project_name: String::new(),
+            new_project_description: String::new(),
+            new_project_shorthand: String::new(),
+            new_project_error: None,
             history_scroll_offset: 0,
             goal_scroll_offset: 0,
             note_scroll_offset: 0,
@@ -456,6 +475,74 @@ impl App {
         }
     }
 
+    // --- New Project Dialog Methods ---
+
+    pub fn open_new_project_dialog(&mut self) {
+        self.state.show_project_selector = false;
+        self.state.show_new_project_dialog = true;
+        self.state.new_project_step = NewProjectStep::Name;
+        self.state.new_project_name.clear();
+        self.state.new_project_description.clear();
+        self.state.new_project_shorthand.clear();
+        self.state.new_project_error = None;
+    }
+
+    pub fn close_new_project_dialog(&mut self) {
+        self.state.show_new_project_dialog = false;
+        self.state.new_project_error = None;
+    }
+
+    pub fn advance_new_project_step(&mut self) {
+        match self.state.new_project_step {
+            NewProjectStep::Name => {
+                if self.state.new_project_name.trim().is_empty() {
+                    self.state.new_project_error = Some("Name cannot be empty.".to_string());
+                } else {
+                    self.state.new_project_error = None;
+                    self.state.new_project_step = NewProjectStep::Description;
+                }
+            }
+            NewProjectStep::Description => {
+                self.state.new_project_error = None;
+                self.state.new_project_step = NewProjectStep::Shorthand;
+            }
+            NewProjectStep::Shorthand => {
+                self.submit_new_project();
+            }
+        }
+    }
+
+    pub fn submit_new_project(&mut self) {
+        let shorthand = self.state.new_project_shorthand.trim().to_uppercase();
+
+        if !shorthand.is_empty() && (shorthand.len() < 3 || shorthand.len() > 8) {
+            self.state.new_project_error =
+                Some("Shorthand must be between 3 and 8 characters (or leave empty).".to_string());
+            return;
+        }
+
+        let name = self.state.new_project_name.trim().to_string();
+        let description = self.state.new_project_description.trim().to_string();
+        let file_storage = filestorage::FileStorage::new();
+
+        match file_storage.create_project(&name, &description, &shorthand) {
+            Ok(filepath) => {
+                // Refresh project list
+                self.config.projects = file_storage.get_projects().unwrap_or_default();
+                self.state.show_new_project_dialog = false;
+                self.state.new_project_error = None;
+                self.state.status_message = Some(format!(
+                    "✓ Project '{}' created: {}",
+                    name,
+                    filepath.file_name().unwrap_or_default().to_string_lossy()
+                ));
+            }
+            Err(e) => {
+                self.state.new_project_error = Some(format!("Error creating project: {}", e));
+            }
+        }
+    }
+
     pub fn toggle_history_viewer(&mut self) {
         self.state.show_history_viewer = !self.state.show_history_viewer;
         if !self.state.show_history_viewer {
@@ -791,6 +878,11 @@ pub fn run_app<B: ratatui::backend::Backend>(
                 continue;
             }
 
+            if app.state.show_new_project_dialog {
+                handle_new_project_dialog(&mut app, key);
+                continue;
+            }
+
             if app.state.show_project_selector {
                 handle_project_selector(&mut app, key.code);
                 continue;
@@ -840,6 +932,45 @@ fn handle_project_selector(app: &mut App, key_code: KeyCode) {
         KeyCode::Up => app.move_project_selection_up(),
         KeyCode::Down => app.move_project_selection_down(),
         KeyCode::Enter => app.select_project(),
+        KeyCode::Char('n') | KeyCode::Char('N') => app.open_new_project_dialog(),
+        _ => {}
+    }
+}
+
+fn handle_new_project_dialog(app: &mut App, key: event::KeyEvent) {
+    match key.code {
+        KeyCode::Esc => app.close_new_project_dialog(),
+        KeyCode::Enter | KeyCode::Tab => app.advance_new_project_step(),
+        KeyCode::BackTab => {
+            app.state.new_project_error = None;
+            app.state.new_project_step = match app.state.new_project_step {
+                NewProjectStep::Name => NewProjectStep::Name,
+                NewProjectStep::Description => NewProjectStep::Name,
+                NewProjectStep::Shorthand => NewProjectStep::Description,
+            };
+        }
+        KeyCode::Backspace => {
+            let field = app.state.new_project_step.clone();
+            match field {
+                NewProjectStep::Name => {
+                    app.state.new_project_name.pop();
+                }
+                NewProjectStep::Description => {
+                    app.state.new_project_description.pop();
+                }
+                NewProjectStep::Shorthand => {
+                    app.state.new_project_shorthand.pop();
+                }
+            }
+        }
+        KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+            let field = app.state.new_project_step.clone();
+            match field {
+                NewProjectStep::Name => app.state.new_project_name.push(c),
+                NewProjectStep::Description => app.state.new_project_description.push(c),
+                NewProjectStep::Shorthand => app.state.new_project_shorthand.push(c),
+            }
+        }
         _ => {}
     }
 }
