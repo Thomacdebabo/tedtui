@@ -7,10 +7,11 @@ use crate::{App, InputField};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout},
-    style::{Color, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
 };
+use std::path::Path;
 use unicode_width::UnicodeWidthStr;
 
 pub enum WidgetItem<'a> {
@@ -89,6 +90,11 @@ pub fn ui(f: &mut Frame, app: &App) {
         let (history_viewer, popup_area) = create_history_viewer_overlay(app, f.area());
         widgets.push(WidgetItem::Clear(popup_area));
         widgets.push(WidgetItem::Paragraph(history_viewer, popup_area));
+    }
+    if app.state.show_move_browser {
+        let (move_browser, popup_area) = create_move_browser_overlay(app, f.area());
+        widgets.push(WidgetItem::Clear(popup_area));
+        widgets.push(WidgetItem::List(move_browser, popup_area));
     }
 
     // Render all widgets
@@ -290,6 +296,8 @@ fn create_help() -> Paragraph<'static> {
         Span::raw(" - Save | "),
         Span::styled("Ctrl+D", Style::default().fg(Color::Cyan)),
         Span::raw(" - Done | "),
+        Span::styled("Ctrl+G", Style::default().fg(Color::Cyan)),
+        Span::raw(" - Move | "),
         Span::styled("Esc", Style::default().fg(Color::Cyan)),
         Span::raw(" - Quit"),
     ]);
@@ -586,6 +594,78 @@ fn create_history_viewer_overlay<'a>(
         .wrap(Wrap { trim: false });
 
     (history_view, popup_area)
+}
+
+fn create_move_browser_overlay<'a>(
+    app: &'a App,
+    frame_area: ratatui::layout::Rect,
+) -> (List<'a>, ratatui::layout::Rect) {
+    let popup_width = frame_area.width.saturating_sub(20).max(40);
+    let popup_height = frame_area.height.saturating_sub(10).max(15).min(30);
+    let popup_x = (frame_area.width.saturating_sub(popup_width)) / 2;
+    let popup_y = (frame_area.height.saturating_sub(popup_height)) / 2;
+
+    let popup_area = ratatui::layout::Rect {
+        x: popup_x,
+        y: popup_y,
+        width: popup_width,
+        height: popup_height,
+    };
+
+    let ted_root_home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    let ted_root = Path::new(&ted_root_home).join(".ted");
+    let display_path = app
+        .state
+        .move_browser_path
+        .strip_prefix(&ted_root)
+        .map(|p| {
+            let s = p.display().to_string();
+            if s.is_empty() {
+                ".ted".to_string()
+            } else {
+                format!(".ted/{}", s)
+            }
+        })
+        .unwrap_or_else(|_| app.state.move_browser_path.display().to_string());
+
+    let items: Vec<ListItem> = if app.state.move_browser_entries.is_empty() {
+        vec![ListItem::new("  (no subdirectories)").style(Style::default().fg(Color::DarkGray))]
+    } else {
+        app.state
+            .move_browser_entries
+            .iter()
+            .enumerate()
+            .map(|(i, entry)| {
+                let indicator = if entry.has_subdirs { " ▸" } else { "" };
+                let text = format!("  {}{}", entry.name, indicator);
+                let style = if i == app.state.move_browser_selected {
+                    Style::default()
+                        .bg(Color::Blue)
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default()
+                };
+                ListItem::new(text).style(style)
+            })
+            .collect()
+    };
+
+    let title = format!(
+        " Move to: {} (←→ navigate, Enter select, Esc cancel) ",
+        display_path
+    );
+
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(title)
+                .border_style(Style::default().fg(Color::Magenta)),
+        )
+        .style(Style::default().bg(Color::Black));
+
+    (list, popup_area)
 }
 
 fn calculate_cursor_x(text: &str, area_x: u16, area_width: u16) -> u16 {

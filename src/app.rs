@@ -11,7 +11,7 @@ use ratatui::Terminal;
 use serde::Deserialize;
 use std::fs;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use utils::count_display_lines_with_wrapping;
 
 // ============================================================================
@@ -61,6 +61,13 @@ pub enum NewProjectStep {
 }
 
 #[derive(Debug, Clone)]
+pub struct DirEntry {
+    pub name: String,
+    pub has_subdirs: bool,
+    pub path: PathBuf,
+}
+
+#[derive(Debug, Clone)]
 pub struct Task {
     pub text: String,
     pub completed: bool,
@@ -74,6 +81,10 @@ pub struct AppState {
     pub show_complete_confirmation: bool,
     pub show_history_viewer: bool,
     pub show_new_project_dialog: bool,
+    pub show_move_browser: bool,
+    pub move_browser_path: PathBuf,
+    pub move_browser_entries: Vec<DirEntry>,
+    pub move_browser_selected: usize,
     pub new_project_step: NewProjectStep,
     pub new_project_name: String,
     pub new_project_description: String,
@@ -96,6 +107,10 @@ impl AppState {
             show_complete_confirmation: false,
             show_history_viewer: false,
             show_new_project_dialog: false,
+            show_move_browser: false,
+            move_browser_path: PathBuf::new(),
+            move_browser_entries: Vec::new(),
+            move_browser_selected: 0,
             new_project_step: NewProjectStep::Name,
             new_project_name: String::new(),
             new_project_description: String::new(),
@@ -550,6 +565,180 @@ impl App {
         }
     }
 
+    // --- Move Browser Methods ---
+
+    fn get_ted_root() -> PathBuf {
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+        Path::new(&home).join(".ted")
+    }
+
+    pub fn open_move_browser(&mut self) {
+        if self.content.saved_filepath.is_none() {
+            self.state.status_message = Some("Save the file first before moving.".to_string());
+            return;
+        }
+        let ted_root = Self::get_ted_root();
+        self.state.move_browser_path = ted_root.clone();
+        self.state.move_browser_entries = Self::read_dir_entries(&ted_root);
+        self.state.move_browser_selected = 0;
+        self.state.show_move_browser = true;
+    }
+
+    pub fn close_move_browser(&mut self) {
+        self.state.show_move_browser = false;
+    }
+
+    fn read_dir_entries(dir: &Path) -> Vec<DirEntry> {
+        let mut entries = Vec::new();
+        if let Ok(read_dir) = fs::read_dir(dir) {
+            for entry in read_dir.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    // Skip hidden directories like .obsidian, .debris
+                    if name.starts_with('.') {
+                        continue;
+                    }
+                    let has_subdirs = fs::read_dir(&path)
+                        .map(|rd| {
+                            rd.flatten().any(|e| {
+                                e.path().is_dir()
+                                    && !e.file_name().to_string_lossy().starts_with('.')
+                            })
+                        })
+                        .unwrap_or(false);
+                    entries.push(DirEntry {
+                        name,
+                        has_subdirs,
+                        path,
+                    });
+                }
+            }
+        }
+        entries.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        entries
+    }
+
+    pub fn move_browser_down(&mut self) {
+        if !self.state.move_browser_entries.is_empty() {
+            if self.state.move_browser_selected < self.state.move_browser_entries.len() - 1 {
+                self.state.move_browser_selected += 1;
+            } else {
+                self.state.move_browser_selected = 0;
+            }
+        }
+    }
+
+    pub fn move_browser_up(&mut self) {
+        if !self.state.move_browser_entries.is_empty() {
+            if self.state.move_browser_selected > 0 {
+                self.state.move_browser_selected -= 1;
+            } else {
+                self.state.move_browser_selected = self.state.move_browser_entries.len() - 1;
+            }
+        }
+    }
+
+    pub fn move_browser_enter_dir(&mut self) {
+        if let Some(entry) = self
+            .state
+            .move_browser_entries
+            .get(self.state.move_browser_selected)
+        {
+            if entry.has_subdirs {
+                let new_path = entry.path.clone();
+                self.state.move_browser_entries = Self::read_dir_entries(&new_path);
+                self.state.move_browser_path = new_path;
+                self.state.move_browser_selected = 0;
+            }
+        }
+    }
+
+    pub fn move_browser_go_back(&mut self) {
+        let ted_root = Self::get_ted_root();
+        if self.state.move_browser_path != ted_root {
+            if let Some(parent) = self.state.move_browser_path.parent() {
+                let parent_path = parent.to_path_buf();
+                self.state.move_browser_entries = Self::read_dir_entries(&parent_path);
+                // Try to select the directory we just came from
+                let old_name = self
+                    .state
+                    .move_browser_path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                self.state.move_browser_selected = self
+                    .state
+                    .move_browser_entries
+                    .iter()
+                    .position(|e| e.name == old_name)
+                    .unwrap_or(0);
+                self.state.move_browser_path = parent_path;
+            }
+        }
+    }
+
+    pub fn move_browser_confirm(&mut self) {
+        let dest_dir = if self.state.move_browser_entries.is_empty() {
+            self.state.move_browser_path.clone()
+        } else if let Some(entry) = self
+            .state
+            .move_browser_entries
+            .get(self.state.move_browser_selected)
+        {
+            entry.path.clone()
+        } else {
+            return;
+        };
+
+        let source_path_str = match &self.content.saved_filepath {
+            Some(p) => p.clone(),
+            None => return,
+        };
+
+        let source = PathBuf::from(&source_path_str);
+        if !source.exists() {
+            self.state.status_message = Some("Error: Source file not found.".to_string());
+            self.state.show_move_browser = false;
+            return;
+        }
+
+        let filename = match source.file_name() {
+            Some(f) => f.to_string_lossy().to_string(),
+            None => {
+                self.state.status_message = Some("Error: Invalid filename.".to_string());
+                self.state.show_move_browser = false;
+                return;
+            }
+        };
+
+        // Create destination directory if needed
+        if let Err(e) = fs::create_dir_all(&dest_dir) {
+            self.state.status_message = Some(format!("Error creating directory: {}", e));
+            self.state.show_move_browser = false;
+            return;
+        }
+
+        let dest = dest_dir.join(&filename);
+
+        match fs::rename(&source, &dest) {
+            Ok(()) => {
+                self.content.saved_filepath = Some(dest.to_string_lossy().to_string());
+                let ted_root = Self::get_ted_root();
+                let display_path = dest
+                    .strip_prefix(&ted_root)
+                    .map(|p| format!(".ted/{}", p.display()))
+                    .unwrap_or_else(|_| dest.display().to_string());
+                self.state.status_message = Some(format!("✓ Moved to: {}", display_path));
+            }
+            Err(e) => {
+                self.state.status_message = Some(format!("✗ Error moving file: {}", e));
+            }
+        }
+
+        self.state.show_move_browser = false;
+    }
+
     pub fn select_project(&mut self) {
         if let Some(idx) = self.state.selected_project_index {
             if let Some(project) = self.config.projects.get(idx) {
@@ -898,6 +1087,11 @@ pub fn run_app<B: ratatui::backend::Backend>(
                 continue;
             }
 
+            if app.state.show_move_browser {
+                handle_move_browser(&mut app, key.code);
+                continue;
+            }
+
             handle_main_input(&mut app, key);
         }
 
@@ -1000,6 +1194,18 @@ fn handle_history_viewer(app: &mut App, key_code: KeyCode) {
     }
 }
 
+fn handle_move_browser(app: &mut App, key_code: KeyCode) {
+    match key_code {
+        KeyCode::Esc => app.close_move_browser(),
+        KeyCode::Up => app.move_browser_up(),
+        KeyCode::Down => app.move_browser_down(),
+        KeyCode::Right => app.move_browser_enter_dir(),
+        KeyCode::Left => app.move_browser_go_back(),
+        KeyCode::Enter => app.move_browser_confirm(),
+        _ => {}
+    }
+}
+
 fn handle_main_input(app: &mut App, key: event::KeyEvent) {
     match key.code {
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -1021,6 +1227,9 @@ fn handle_main_input(app: &mut App, key: event::KeyEvent) {
         }
         KeyCode::Char('h') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.toggle_history_viewer();
+        }
+        KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.open_move_browser();
         }
         KeyCode::Esc => app.state.quit = true,
         KeyCode::Tab => app.next_field(),
