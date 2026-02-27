@@ -6,6 +6,7 @@ mod app;
 mod filestorage;
 mod markdown;
 mod parser;
+mod theme;
 mod ui;
 mod utils;
 

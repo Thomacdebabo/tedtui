@@ -7,7 +7,7 @@ use crate::{App, InputField};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout},
-    style::{Color, Modifier, Style},
+    style::Style,
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
 };
@@ -63,7 +63,7 @@ pub fn ui(f: &mut Frame, app: &App) {
     let note_field = create_note_field(app);
     widgets.push(WidgetItem::Paragraph(note_field, chunks[4]));
 
-    let help = create_help();
+    let help = create_help(app);
     widgets.push(WidgetItem::Paragraph(help, chunks[5]));
 
     if let Some(status_message) = create_status_message(app) {
@@ -112,14 +112,15 @@ pub fn ui(f: &mut Frame, app: &App) {
     render_cursor(f, app, &chunks, &project_info_chunks, &tasks_chunks);
 }
 
-fn create_input_block<'a>(title: &'a str, is_active: bool) -> Block<'a> {
+fn create_input_block<'a>(title: &'a str, is_active: bool, app: &'a App) -> Block<'a> {
+    let t = &app.config.theme;
     Block::default()
         .borders(Borders::ALL)
         .title(title)
         .border_style(if is_active {
-            Style::default().fg(Color::Yellow)
+            t.active_border_style()
         } else {
-            Style::default()
+            t.inactive_border_style()
         })
 }
 
@@ -133,9 +134,10 @@ fn truncate_text_for_display(text: &str, max_width: usize) -> &str {
 
 fn create_name_field<'a>(app: &'a App, area: ratatui::layout::Rect) -> Paragraph<'a> {
     let is_active = app.state.current_field == InputField::Name;
-    let name_block = create_input_block("Name", is_active);
+    let name_block = create_input_block("Name", is_active, app);
     let name_text = truncate_text_for_display(&app.content.name, area.width as usize - 4);
-    Paragraph::new(name_text).block(name_block)
+    let styled_text = Span::styled(name_text, Style::default().fg(app.config.theme.field_text));
+    Paragraph::new(styled_text).block(name_block)
 }
 
 fn create_project_info_fields<'a>(
@@ -154,19 +156,22 @@ fn create_project_info_fields<'a>(
         "Project ID"
     };
     let is_active = app.state.current_field == InputField::ProjectId;
-    let project_block = create_input_block(project_title, is_active);
+    let project_block = create_input_block(project_title, is_active, app);
     let project_text = truncate_text_for_display(
         &app.content.project_id,
         project_info_chunks[0].width as usize - 4,
     );
-    let project_paragraph = Paragraph::new(project_text).block(project_block);
+    let text_style = Style::default().fg(app.config.theme.field_text);
+    let project_paragraph = Paragraph::new(Span::styled(project_text, text_style))
+        .block(project_block);
 
     // Info
     let is_active = app.state.current_field == InputField::Info;
-    let info_block = create_input_block("Info", is_active);
+    let info_block = create_input_block("Info", is_active, app);
     let info_text =
         truncate_text_for_display(&app.content.info, project_info_chunks[1].width as usize - 4);
-    let info_paragraph = Paragraph::new(info_text).block(info_block);
+    let info_paragraph = Paragraph::new(Span::styled(info_text, text_style))
+        .block(info_block);
 
     (
         project_paragraph,
@@ -192,8 +197,9 @@ fn create_goal_field<'a>(app: &'a App) -> Paragraph<'a> {
         visible_text.push('█');
     }
 
-    let goal_block = create_input_block("Goal / Short Description (↑↓ to scroll)", is_active);
-    Paragraph::new(visible_text)
+    let goal_block = create_input_block("Goal / Short Description (↑↓ to scroll)", is_active, app);
+    let text_style = Style::default().fg(app.config.theme.field_text);
+    Paragraph::new(Span::styled(visible_text, text_style))
         .block(goal_block)
         .wrap(Wrap { trim: false })
 }
@@ -214,14 +220,17 @@ fn create_tasks_section<'a>(
 
     // Task input
     let is_active = app.state.current_field == InputField::Tasks;
-    let task_input_block = create_input_block("Add Task (Enter to add)", is_active);
+    let task_input_block = create_input_block("Add Task (Enter to add)", is_active, app);
     let task_text = truncate_text_for_display(
         &app.content.current_task_input,
         tasks_chunks[0].width as usize - 4,
     );
-    let task_input_paragraph = Paragraph::new(task_text).block(task_input_block);
+    let text_style = Style::default().fg(app.config.theme.field_text);
+    let task_input_paragraph = Paragraph::new(Span::styled(task_text, text_style))
+        .block(task_input_block);
 
     // Task list
+    let t = &app.config.theme;
     let task_items: Vec<ListItem> = app
         .content
         .tasks
@@ -230,7 +239,7 @@ fn create_tasks_section<'a>(
             let checkbox = if task.completed { "[x]" } else { "[ ]" };
             let text = format!("  - {} {}", checkbox, task.text);
             let style = if task.completed {
-                Style::default().fg(Color::DarkGray)
+                Style::default().fg(t.task_completed)
             } else {
                 Style::default()
             };
@@ -243,8 +252,13 @@ fn create_tasks_section<'a>(
         .block(create_input_block(
             "Task List (Tab to enter, ↑↓ select, Space toggle, Del delete)",
             is_active,
+            app,
         ))
-        .highlight_style(Style::default().bg(Color::DarkGray).fg(Color::White));
+        .highlight_style(
+            Style::default()
+                .bg(t.task_highlight_bg)
+                .fg(t.task_highlight_fg),
+        );
 
     let mut list_state = ListState::default();
     list_state.select(app.state.selected_task_index);
@@ -270,48 +284,52 @@ fn create_note_field<'a>(app: &'a App) -> Paragraph<'a> {
         .collect();
     let mut visible_text = visible_lines.join("\n");
 
-    let note_block: Block<'_> = create_input_block("Note (↑↓ to scroll)", is_active);
+    let note_block: Block<'_> = create_input_block("Note (↑↓ to scroll)", is_active, app);
 
     if is_active {
         visible_text.push('█');
     }
-    Paragraph::new(visible_text)
+    let text_style = Style::default().fg(app.config.theme.field_text);
+    Paragraph::new(Span::styled(visible_text, text_style))
         .block(note_block)
         .wrap(Wrap { trim: false })
 }
 
-fn create_help() -> Paragraph<'static> {
+fn create_help(app: &App) -> Paragraph<'static> {
+    let t = &app.config.theme;
+    let key_style = Style::default().fg(t.help_key);
     let help_text = Line::from(vec![
-        Span::styled("Tab", Style::default().fg(Color::Cyan)),
+        Span::styled("Tab", key_style),
         Span::raw(" / "),
-        Span::styled("Shift+Tab", Style::default().fg(Color::Cyan)),
+        Span::styled("Shift+Tab", key_style),
         Span::raw(" - Navigate | "),
-        Span::styled("Space", Style::default().fg(Color::Cyan)),
+        Span::styled("Space", key_style),
         Span::raw(" - Toggle | "),
-        Span::styled("Ctrl+P", Style::default().fg(Color::Cyan)),
+        Span::styled("Ctrl+P", key_style),
         Span::raw(" - Projects | "),
-        Span::styled("Ctrl+H", Style::default().fg(Color::Cyan)),
+        Span::styled("Ctrl+H", key_style),
         Span::raw(" - History | "),
-        Span::styled("Ctrl+S", Style::default().fg(Color::Cyan)),
+        Span::styled("Ctrl+S", key_style),
         Span::raw(" - Save | "),
-        Span::styled("Ctrl+D", Style::default().fg(Color::Cyan)),
+        Span::styled("Ctrl+D", key_style),
         Span::raw(" - Done | "),
-        Span::styled("Ctrl+G", Style::default().fg(Color::Cyan)),
+        Span::styled("Ctrl+G", key_style),
         Span::raw(" - Move | "),
-        Span::styled("Esc", Style::default().fg(Color::Cyan)),
+        Span::styled("Esc", key_style),
         Span::raw(" - Quit"),
     ]);
     Paragraph::new(help_text).block(Block::default().borders(Borders::ALL).title("Help"))
 }
 
 fn create_status_message<'a>(app: &'a App) -> Option<Paragraph<'a>> {
+    let t = &app.config.theme;
     app.state.status_message.as_ref().map(|msg| {
         let status_color = if msg.contains("✓") {
-            Color::Green
+            t.status_success
         } else if msg.contains("✗") {
-            Color::Red
+            t.status_error
         } else {
-            Color::Yellow
+            t.status_info
         };
         Paragraph::new(msg.as_str())
             .style(Style::default().fg(status_color))
@@ -335,9 +353,10 @@ fn create_new_project_overlay<'a>(
         height: popup_height,
     };
 
-    let active = Style::default().fg(Color::Yellow).bg(Color::Black);
-    let inactive = Style::default().fg(Color::White).bg(Color::Black);
-    let label = Style::default().fg(Color::Green).bg(Color::Black);
+    let t = &app.config.theme;
+    let active = Style::default().fg(t.popup_active_input).bg(t.popup_bg);
+    let inactive = Style::default().fg(t.popup_inactive_input).bg(t.popup_bg);
+    let label = Style::default().fg(t.popup_label).bg(t.popup_bg);
 
     let name_style = if app.state.new_project_step == NewProjectStep::Name {
         active
@@ -387,12 +406,12 @@ fn create_new_project_overlay<'a>(
         ]),
         Line::from(Span::styled(
             "  (3-8 uppercase chars, optional)",
-            Style::default().fg(Color::Gray),
+            Style::default().fg(t.popup_hint),
         )),
         Line::from(""),
         Line::from(Span::styled(
-            "  Tab/Enter \u{2502} next    Shift+Tab \u{2502} back    Esc \u{2502} cancel",
-            Style::default().fg(Color::Cyan),
+            "  Tab/Enter │ next    Shift+Tab │ back    Esc │ cancel",
+            Style::default().fg(t.popup_help),
         )),
     ];
 
@@ -400,7 +419,7 @@ fn create_new_project_overlay<'a>(
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
             format!("  \u{2717} {}", err),
-            Style::default().fg(Color::Red),
+            Style::default().fg(t.popup_error),
         )));
     }
 
@@ -409,9 +428,9 @@ fn create_new_project_overlay<'a>(
             Block::default()
                 .borders(Borders::ALL)
                 .title(" New Project ")
-                .border_style(Style::default().fg(Color::Green)),
+                .border_style(Style::default().fg(t.new_project_border)),
         )
-        .style(Style::default().bg(Color::Black));
+        .style(t.popup_bg_style());
 
     (overlay, popup_area)
 }
@@ -433,19 +452,20 @@ fn create_project_selector_overlay<'a>(
     };
 
     let filtered = app.get_filtered_projects();
+    let t = &app.config.theme;
     let mut items: Vec<ListItem> = Vec::new();
 
     // Filter input line
     let filter_display = format!("  Filter: {}█", app.state.project_filter);
-    items.push(ListItem::new(filter_display).style(Style::default().fg(Color::Yellow)));
-    items.push(ListItem::new("  ─────────────────").style(Style::default().fg(Color::DarkGray)));
+    items.push(ListItem::new(filter_display).style(Style::default().fg(t.filter_input)));
+    items.push(ListItem::new("  ─────────────────").style(Style::default().fg(t.separator)));
 
     if filtered.is_empty() {
-        items.push(ListItem::new("  (no matches)").style(Style::default().fg(Color::DarkGray)));
+        items.push(ListItem::new("  (no matches)").style(Style::default().fg(t.no_results)));
     } else {
         for (i, (_, project)) in filtered.iter().enumerate() {
             let style = if Some(i) == app.state.selected_project_index {
-                Style::default().bg(Color::Blue).fg(Color::White)
+                t.selected_style()
             } else {
                 Style::default()
             };
@@ -463,9 +483,9 @@ fn create_project_selector_overlay<'a>(
             Block::default()
                 .borders(Borders::ALL)
                 .title("Select Project (↑↓ Navigate, Enter Select, Ctrl+N New, Esc Cancel)")
-                .border_style(Style::default().fg(Color::Yellow)),
+                .border_style(Style::default().fg(t.project_border)),
         )
-        .style(Style::default().bg(Color::Black));
+        .style(t.popup_bg_style());
 
     (projects_list, popup_area)
 }
@@ -486,28 +506,29 @@ fn create_completion_confirmation_overlay<'a>(
         height: popup_height,
     };
 
+    let t = &app.config.theme;
     let incomplete_count = app.content.tasks.iter().filter(|t| !t.completed).count();
     let message = vec![
         Line::from(""),
         Line::from(Span::styled(
             format!("You have {} incomplete task(s).", incomplete_count),
-            Style::default().fg(Color::White),
+            Style::default().fg(t.popup_text),
         )),
         Line::from(""),
         Line::from(Span::styled(
             "Mark all tasks as complete before moving to done?",
-            Style::default().fg(Color::Yellow),
+            Style::default().fg(t.confirm_prompt),
         )),
         Line::from(""),
         Line::from(vec![
-            Span::styled("Press ", Style::default().fg(Color::White)),
-            Span::styled("Y", Style::default().fg(Color::Green)),
+            Span::styled("Press ", Style::default().fg(t.popup_text)),
+            Span::styled("Y", Style::default().fg(t.confirm_yes)),
             Span::styled(
                 " to mark complete and move, ",
-                Style::default().fg(Color::White),
+                Style::default().fg(t.popup_text),
             ),
-            Span::styled("N", Style::default().fg(Color::Red)),
-            Span::styled(" to cancel", Style::default().fg(Color::White)),
+            Span::styled("N", Style::default().fg(t.confirm_no)),
+            Span::styled(" to cancel", Style::default().fg(t.popup_text)),
         ]),
     ];
 
@@ -516,9 +537,9 @@ fn create_completion_confirmation_overlay<'a>(
             Block::default()
                 .borders(Borders::ALL)
                 .title("Confirm Move to Done")
-                .border_style(Style::default().fg(Color::Yellow)),
+                .border_style(Style::default().fg(t.confirm_border)),
         )
-        .style(Style::default().bg(Color::Black))
+        .style(t.popup_bg_style())
         .wrap(Wrap { trim: false });
 
     (confirmation, popup_area)
@@ -547,6 +568,7 @@ fn create_history_viewer_overlay<'a>(
         .filter(|line| !line.trim().is_empty())
         .collect();
 
+    let t = &app.config.theme;
     let visible_lines = (popup_height as usize).saturating_sub(3); // Account for borders and title
     let start_idx = app.state.history_scroll_offset;
     let end_idx = (start_idx + visible_lines).min(history_entries.len());
@@ -557,13 +579,13 @@ fn create_history_viewer_overlay<'a>(
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
             "No history entries yet.",
-            Style::default().fg(Color::Gray),
+            Style::default().fg(t.popup_hint),
         )));
     } else {
         for entry in history_entries.iter().skip(start_idx).take(visible_lines) {
             lines.push(Line::from(Span::styled(
                 *entry,
-                Style::default().fg(Color::White),
+                Style::default().fg(t.history_entry),
             )));
         }
 
@@ -574,7 +596,7 @@ fn create_history_viewer_overlay<'a>(
                     "... {} more entries (↓ to scroll)",
                     history_entries.len() - end_idx
                 ),
-                Style::default().fg(Color::Yellow),
+                Style::default().fg(t.history_scroll_hint),
             )));
         }
     }
@@ -594,9 +616,9 @@ fn create_history_viewer_overlay<'a>(
             Block::default()
                 .borders(Borders::ALL)
                 .title(title)
-                .border_style(Style::default().fg(Color::Cyan)),
+                .border_style(Style::default().fg(t.history_border)),
         )
-        .style(Style::default().bg(Color::Black))
+        .style(t.popup_bg_style())
         .wrap(Wrap { trim: false });
 
     (history_view, popup_area)
@@ -634,8 +656,9 @@ fn create_move_browser_overlay<'a>(
         })
         .unwrap_or_else(|_| app.state.move_browser_path.display().to_string());
 
+    let t = &app.config.theme;
     let items: Vec<ListItem> = if app.state.move_browser_entries.is_empty() {
-        vec![ListItem::new("  (no subdirectories)").style(Style::default().fg(Color::DarkGray))]
+        vec![ListItem::new("  (no subdirectories)").style(Style::default().fg(t.no_results))]
     } else {
         app.state
             .move_browser_entries
@@ -645,10 +668,7 @@ fn create_move_browser_overlay<'a>(
                 let indicator = if entry.has_subdirs { " ▸" } else { "" };
                 let text = format!("  {}{}", entry.name, indicator);
                 let style = if i == app.state.move_browser_selected {
-                    Style::default()
-                        .bg(Color::Blue)
-                        .fg(Color::White)
-                        .add_modifier(Modifier::BOLD)
+                    t.selected_style()
                 } else {
                     Style::default()
                 };
@@ -667,9 +687,9 @@ fn create_move_browser_overlay<'a>(
             Block::default()
                 .borders(Borders::ALL)
                 .title(title)
-                .border_style(Style::default().fg(Color::Magenta)),
+                .border_style(Style::default().fg(t.move_border)),
         )
-        .style(Style::default().bg(Color::Black));
+        .style(t.popup_bg_style());
 
     (list, popup_area)
 }

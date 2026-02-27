@@ -1,6 +1,7 @@
 use crate::filestorage;
 use crate::markdown;
 use crate::parser;
+use crate::theme::Theme;
 use crate::ui;
 use crate::utils;
 use crossterm::event::{self, Event, KeyCode, KeyModifiers};
@@ -190,6 +191,7 @@ pub struct App {
 pub struct AppConfig {
     pub output_dir: String,
     pub projects: Vec<Project>,
+    pub theme: Theme,
 }
 
 impl AppConfig {
@@ -197,10 +199,12 @@ impl AppConfig {
         let file_storage = FileStorage::new();
         let projects = file_storage.get_projects().unwrap_or_default();
         let output_dir = file_storage.get_todos_dir().to_string_lossy().to_string();
+        let theme = Theme::load();
 
         AppConfig {
             output_dir,
             projects,
+            theme,
         }
     }
 
