@@ -266,30 +266,20 @@ impl App {
         let mut app = AppConfig::new().into_app();
 
         // Set values from JSON
-        if let Some(name) = json_input.name {
-            app.content.name = name;
-        }
-        if let Some(project_id) = json_input.project_id {
-            app.content.project_id = project_id;
-        }
-        if let Some(info) = json_input.info {
-            app.content.info = info;
-        }
-        if let Some(goal) = json_input.goal {
-            app.content.goal = goal;
-        }
-        if let Some(tasks) = json_input.tasks {
-            app.content.tasks = tasks
-                .into_iter()
-                .map(|text| Task {
-                    text,
-                    completed: false,
-                })
-                .collect();
-        }
-        if let Some(note) = json_input.note {
-            app.content.note = note;
-        }
+        app.content.name = json_input.name.unwrap_or_default();
+        app.content.project_id = json_input.project_id.unwrap_or_default();
+        app.content.info = json_input.info.unwrap_or_default();
+        app.content.goal = json_input.goal.unwrap_or_default();
+        app.content.tasks = json_input
+            .tasks
+            .unwrap_or_default()
+            .into_iter()
+            .map(|text| Task {
+                text,
+                completed: false,
+            })
+            .collect();
+        app.content.note = json_input.note.unwrap_or_default();
 
         app.state.status_message = Some("Loaded from JSON".to_string());
 
