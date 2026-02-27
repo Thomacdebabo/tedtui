@@ -657,24 +657,29 @@ fn create_move_browser_overlay<'a>(
         .unwrap_or_else(|_| app.state.move_browser_path.display().to_string());
 
     let t = &app.config.theme;
-    let items: Vec<ListItem> = if app.state.move_browser_entries.is_empty() {
-        vec![ListItem::new("  (no subdirectories)").style(Style::default().fg(t.no_results))]
+    let filtered = app.get_filtered_move_entries();
+    let mut items: Vec<ListItem> = Vec::new();
+
+    // Filter input line
+    let filter_display = format!("  Filter: {}█", app.state.move_browser_filter);
+    items.push(ListItem::new(filter_display).style(Style::default().fg(t.filter_input)));
+    items.push(ListItem::new("  ─────────────────").style(Style::default().fg(t.separator)));
+
+    if app.state.move_browser_entries.is_empty() {
+        items.push(ListItem::new("  (no subdirectories)").style(Style::default().fg(t.no_results)));
+    } else if filtered.is_empty() {
+        items.push(ListItem::new("  (no matches)").style(Style::default().fg(t.no_results)));
     } else {
-        app.state
-            .move_browser_entries
-            .iter()
-            .enumerate()
-            .map(|(i, entry)| {
-                let indicator = if entry.has_subdirs { " ▸" } else { "" };
-                let text = format!("  {}{}", entry.name, indicator);
-                let style = if i == app.state.move_browser_selected {
-                    t.selected_style()
-                } else {
-                    Style::default()
-                };
-                ListItem::new(text).style(style)
-            })
-            .collect()
+        for (i, (_, entry)) in filtered.iter().enumerate() {
+            let indicator = if entry.has_subdirs { " ▸" } else { "" };
+            let text = format!("  {}{}", entry.name, indicator);
+            let style = if i == app.state.move_browser_selected {
+                t.selected_style()
+            } else {
+                Style::default()
+            };
+            items.push(ListItem::new(text).style(style));
+        }
     };
 
     let title = format!(
