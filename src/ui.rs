@@ -432,12 +432,18 @@ fn create_project_selector_overlay<'a>(
         height: popup_height,
     };
 
-    let project_items: Vec<ListItem> = app
-        .config
-        .projects
-        .iter()
-        .enumerate()
-        .map(|(i, project)| {
+    let filtered = app.get_filtered_projects();
+    let mut items: Vec<ListItem> = Vec::new();
+
+    // Filter input line
+    let filter_display = format!("  Filter: {}█", app.state.project_filter);
+    items.push(ListItem::new(filter_display).style(Style::default().fg(Color::Yellow)));
+    items.push(ListItem::new("  ─────────────────").style(Style::default().fg(Color::DarkGray)));
+
+    if filtered.is_empty() {
+        items.push(ListItem::new("  (no matches)").style(Style::default().fg(Color::DarkGray)));
+    } else {
+        for (i, (_, project)) in filtered.iter().enumerate() {
             let style = if Some(i) == app.state.selected_project_index {
                 Style::default().bg(Color::Blue).fg(Color::White)
             } else {
@@ -448,15 +454,15 @@ fn create_project_selector_overlay<'a>(
             } else {
                 format!("  {} - {}", project.id, project.name)
             };
-            ListItem::new(text).style(style)
-        })
-        .collect();
+            items.push(ListItem::new(text).style(style));
+        }
+    }
 
-    let projects_list = List::new(project_items)
+    let projects_list = List::new(items)
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title("Select Project (↑↓ Navigate, Enter Select, N New, Esc Cancel)")
+                .title("Select Project (↑↓ Navigate, Enter Select, Ctrl+N New, Esc Cancel)")
                 .border_style(Style::default().fg(Color::Yellow)),
         )
         .style(Style::default().bg(Color::Black));

@@ -78,6 +78,7 @@ pub struct AppState {
     pub selected_task_index: Option<usize>,
     pub selected_project_index: Option<usize>,
     pub show_project_selector: bool,
+    pub project_filter: String,
     pub show_complete_confirmation: bool,
     pub show_history_viewer: bool,
     pub show_new_project_dialog: bool,
@@ -85,6 +86,7 @@ pub struct AppState {
     pub move_browser_path: PathBuf,
     pub move_browser_entries: Vec<DirEntry>,
     pub move_browser_selected: usize,
+    pub move_browser_filter: String,
     pub new_project_step: NewProjectStep,
     pub new_project_name: String,
     pub new_project_description: String,
@@ -104,6 +106,7 @@ impl AppState {
             selected_task_index: None,
             selected_project_index: None,
             show_project_selector: false,
+            project_filter: String::new(),
             show_complete_confirmation: false,
             show_history_viewer: false,
             show_new_project_dialog: false,
@@ -111,6 +114,7 @@ impl AppState {
             move_browser_path: PathBuf::new(),
             move_browser_entries: Vec::new(),
             move_browser_selected: 0,
+            move_browser_filter: String::new(),
             new_project_step: NewProjectStep::Name,
             new_project_name: String::new(),
             new_project_description: String::new(),
@@ -480,12 +484,48 @@ impl App {
 
     // --- Project Selector Methods ---
 
+    /// Fuzzy match: checks if all characters of the pattern appear in order in the target (case-insensitive)
+    fn fuzzy_match(pattern: &str, target: &str) -> bool {
+        if pattern.is_empty() {
+            return true;
+        }
+        let target_lower = target.to_lowercase();
+        let pattern_lower = pattern.to_lowercase();
+        let mut pattern_chars = pattern_lower.chars();
+        let mut current = pattern_chars.next();
+        for ch in target_lower.chars() {
+            if let Some(p) = current {
+                if ch == p {
+                    current = pattern_chars.next();
+                }
+            } else {
+                break;
+            }
+        }
+        current.is_none()
+    }
+
+    pub fn get_filtered_projects(&self) -> Vec<(usize, &Project)> {
+        self.config
+            .projects
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| {
+                let search_text = format!(
+                    "{} {} {}",
+                    p.id,
+                    p.name,
+                    p.shorthand.as_deref().unwrap_or("")
+                );
+                Self::fuzzy_match(&self.state.project_filter, &search_text)
+            })
+            .collect()
+    }
+
     pub fn toggle_project_selector(&mut self) {
         self.state.show_project_selector = !self.state.show_project_selector;
-        if self.state.show_project_selector
-            && self.state.selected_project_index.is_none()
-            && !self.config.projects.is_empty()
-        {
+        if self.state.show_project_selector {
+            self.state.project_filter.clear();
             self.state.selected_project_index = Some(0);
         }
     }
@@ -580,12 +620,22 @@ impl App {
         let ted_root = Self::get_ted_root();
         self.state.move_browser_path = ted_root.clone();
         self.state.move_browser_entries = Self::read_dir_entries(&ted_root);
+        self.state.move_browser_filter.clear();
         self.state.move_browser_selected = 0;
         self.state.show_move_browser = true;
     }
 
     pub fn close_move_browser(&mut self) {
         self.state.show_move_browser = false;
+    }
+
+    pub fn get_filtered_move_entries(&self) -> Vec<(usize, &DirEntry)> {
+        self.state
+            .move_browser_entries
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| Self::fuzzy_match(&self.state.move_browser_filter, &e.name))
+            .collect()
     }
 
     fn read_dir_entries(dir: &Path) -> Vec<DirEntry> {
@@ -620,8 +670,9 @@ impl App {
     }
 
     pub fn move_browser_down(&mut self) {
-        if !self.state.move_browser_entries.is_empty() {
-            if self.state.move_browser_selected < self.state.move_browser_entries.len() - 1 {
+        let count = self.get_filtered_move_entries().len();
+        if count > 0 {
+            if self.state.move_browser_selected < count - 1 {
                 self.state.move_browser_selected += 1;
             } else {
                 self.state.move_browser_selected = 0;
@@ -630,25 +681,24 @@ impl App {
     }
 
     pub fn move_browser_up(&mut self) {
-        if !self.state.move_browser_entries.is_empty() {
+        let count = self.get_filtered_move_entries().len();
+        if count > 0 {
             if self.state.move_browser_selected > 0 {
                 self.state.move_browser_selected -= 1;
             } else {
-                self.state.move_browser_selected = self.state.move_browser_entries.len() - 1;
+                self.state.move_browser_selected = count - 1;
             }
         }
     }
 
     pub fn move_browser_enter_dir(&mut self) {
-        if let Some(entry) = self
-            .state
-            .move_browser_entries
-            .get(self.state.move_browser_selected)
-        {
+        let filtered = self.get_filtered_move_entries();
+        if let Some(&(_, entry)) = filtered.get(self.state.move_browser_selected) {
             if entry.has_subdirs {
                 let new_path = entry.path.clone();
                 self.state.move_browser_entries = Self::read_dir_entries(&new_path);
                 self.state.move_browser_path = new_path;
+                self.state.move_browser_filter.clear();
                 self.state.move_browser_selected = 0;
             }
         }
@@ -660,18 +710,17 @@ impl App {
             if let Some(parent) = self.state.move_browser_path.parent() {
                 let parent_path = parent.to_path_buf();
                 self.state.move_browser_entries = Self::read_dir_entries(&parent_path);
-                // Try to select the directory we just came from
                 let old_name = self
                     .state
                     .move_browser_path
                     .file_name()
                     .map(|n| n.to_string_lossy().to_string())
                     .unwrap_or_default();
-                self.state.move_browser_selected = self
-                    .state
-                    .move_browser_entries
+                self.state.move_browser_filter.clear();
+                let filtered = self.get_filtered_move_entries();
+                self.state.move_browser_selected = filtered
                     .iter()
-                    .position(|e| e.name == old_name)
+                    .position(|(_, e)| e.name == old_name)
                     .unwrap_or(0);
                 self.state.move_browser_path = parent_path;
             }
@@ -679,13 +728,10 @@ impl App {
     }
 
     pub fn move_browser_confirm(&mut self) {
-        let dest_dir = if self.state.move_browser_entries.is_empty() {
+        let filtered = self.get_filtered_move_entries();
+        let dest_dir = if filtered.is_empty() {
             self.state.move_browser_path.clone()
-        } else if let Some(entry) = self
-            .state
-            .move_browser_entries
-            .get(self.state.move_browser_selected)
-        {
+        } else if let Some(&(_, entry)) = filtered.get(self.state.move_browser_selected) {
             entry.path.clone()
         } else {
             return;
@@ -740,8 +786,9 @@ impl App {
     }
 
     pub fn select_project(&mut self) {
-        if let Some(idx) = self.state.selected_project_index {
-            if let Some(project) = self.config.projects.get(idx) {
+        let filtered = self.get_filtered_projects();
+        if let Some(sel) = self.state.selected_project_index {
+            if let Some(&(_, project)) = filtered.get(sel) {
                 self.content.project_id = project.id.clone();
             }
         }
@@ -749,19 +796,21 @@ impl App {
     }
 
     pub fn move_project_selection_up(&mut self) {
-        if !self.config.projects.is_empty() {
+        let count = self.get_filtered_projects().len();
+        if count > 0 {
             self.state.selected_project_index = Some(match self.state.selected_project_index {
                 Some(i) if i > 0 => i - 1,
-                Some(_) => self.config.projects.len() - 1,
+                Some(_) => count - 1,
                 None => 0,
             });
         }
     }
 
     pub fn move_project_selection_down(&mut self) {
-        if !self.config.projects.is_empty() {
+        let count = self.get_filtered_projects().len();
+        if count > 0 {
             self.state.selected_project_index = Some(match self.state.selected_project_index {
-                Some(i) if i < self.config.projects.len() - 1 => i + 1,
+                Some(i) if i < count - 1 => i + 1,
                 Some(_) => 0,
                 None => 0,
             });
@@ -1073,7 +1122,7 @@ pub fn run_app<B: ratatui::backend::Backend>(
             }
 
             if app.state.show_project_selector {
-                handle_project_selector(&mut app, key.code);
+                handle_project_selector(&mut app, key);
                 continue;
             }
 
@@ -1088,7 +1137,7 @@ pub fn run_app<B: ratatui::backend::Backend>(
             }
 
             if app.state.show_move_browser {
-                handle_move_browser(&mut app, key.code);
+                handle_move_browser(&mut app, key);
                 continue;
             }
 
@@ -1120,13 +1169,25 @@ fn handle_confirmation_dialog(app: &mut App, key_code: KeyCode) {
     }
 }
 
-fn handle_project_selector(app: &mut App, key_code: KeyCode) {
-    match key_code {
+fn handle_project_selector(app: &mut App, key: event::KeyEvent) {
+    match key.code {
         KeyCode::Esc => app.state.show_project_selector = false,
         KeyCode::Up => app.move_project_selection_up(),
         KeyCode::Down => app.move_project_selection_down(),
         KeyCode::Enter => app.select_project(),
-        KeyCode::Char('n') | KeyCode::Char('N') => app.open_new_project_dialog(),
+        KeyCode::Char('n') | KeyCode::Char('N')
+            if key.modifiers.contains(KeyModifiers::CONTROL) =>
+        {
+            app.open_new_project_dialog();
+        }
+        KeyCode::Backspace => {
+            app.state.project_filter.pop();
+            app.state.selected_project_index = Some(0);
+        }
+        KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.state.project_filter.push(c);
+            app.state.selected_project_index = Some(0);
+        }
         _ => {}
     }
 }
@@ -1194,14 +1255,22 @@ fn handle_history_viewer(app: &mut App, key_code: KeyCode) {
     }
 }
 
-fn handle_move_browser(app: &mut App, key_code: KeyCode) {
-    match key_code {
+fn handle_move_browser(app: &mut App, key: event::KeyEvent) {
+    match key.code {
         KeyCode::Esc => app.close_move_browser(),
         KeyCode::Up => app.move_browser_up(),
         KeyCode::Down => app.move_browser_down(),
         KeyCode::Right => app.move_browser_enter_dir(),
         KeyCode::Left => app.move_browser_go_back(),
         KeyCode::Enter => app.move_browser_confirm(),
+        KeyCode::Backspace => {
+            app.state.move_browser_filter.pop();
+            app.state.move_browser_selected = 0;
+        }
+        KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.state.move_browser_filter.push(c);
+            app.state.move_browser_selected = 0;
+        }
         _ => {}
     }
 }
