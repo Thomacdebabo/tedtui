@@ -145,6 +145,9 @@ fn default_no_results() -> ThemeColor {
 fn default_field_text() -> ThemeColor {
     ThemeColor::Named("reset".into())
 }
+fn default_title_text() -> ThemeColor {
+    ThemeColor::Named("white".into())
+}
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
@@ -215,6 +218,8 @@ pub struct ThemeConfig {
     pub no_results: ThemeColor,
     #[serde(default = "default_field_text")]
     pub field_text: ThemeColor,
+    #[serde(default = "default_title_text")]
+    pub title_text: ThemeColor,
 }
 
 impl Default for ThemeConfig {
@@ -253,6 +258,7 @@ impl Default for ThemeConfig {
             separator: default_separator(),
             no_results: default_no_results(),
             field_text: default_field_text(),
+            title_text: default_title_text(),
         }
     }
 }
@@ -292,6 +298,7 @@ pub struct Theme {
     pub separator: Color,
     pub no_results: Color,
     pub field_text: Color,
+    pub title_text: Color,
 }
 
 impl Theme {
@@ -330,6 +337,7 @@ impl Theme {
             separator: config.separator.to_color(),
             no_results: config.no_results.to_color(),
             field_text: config.field_text.to_color(),
+            title_text: config.title_text.to_color(),
         }
     }
 

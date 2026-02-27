@@ -117,6 +117,7 @@ fn create_input_block<'a>(title: &'a str, is_active: bool, app: &'a App) -> Bloc
     Block::default()
         .borders(Borders::ALL)
         .title(title)
+        .title_style(Style::default().fg(t.title_text))
         .border_style(if is_active {
             t.active_border_style()
         } else {
@@ -162,16 +163,15 @@ fn create_project_info_fields<'a>(
         project_info_chunks[0].width as usize - 4,
     );
     let text_style = Style::default().fg(app.config.theme.field_text);
-    let project_paragraph = Paragraph::new(Span::styled(project_text, text_style))
-        .block(project_block);
+    let project_paragraph =
+        Paragraph::new(Span::styled(project_text, text_style)).block(project_block);
 
     // Info
     let is_active = app.state.current_field == InputField::Info;
     let info_block = create_input_block("Info", is_active, app);
     let info_text =
         truncate_text_for_display(&app.content.info, project_info_chunks[1].width as usize - 4);
-    let info_paragraph = Paragraph::new(Span::styled(info_text, text_style))
-        .block(info_block);
+    let info_paragraph = Paragraph::new(Span::styled(info_text, text_style)).block(info_block);
 
     (
         project_paragraph,
@@ -226,8 +226,8 @@ fn create_tasks_section<'a>(
         tasks_chunks[0].width as usize - 4,
     );
     let text_style = Style::default().fg(app.config.theme.field_text);
-    let task_input_paragraph = Paragraph::new(Span::styled(task_text, text_style))
-        .block(task_input_block);
+    let task_input_paragraph =
+        Paragraph::new(Span::styled(task_text, text_style)).block(task_input_block);
 
     // Task list
     let t = &app.config.theme;

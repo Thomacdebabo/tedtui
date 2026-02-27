@@ -31,5 +31,6 @@
     "filter_input": "yellow",
     "separator": "dark_gray",
     "no_results": "dark_gray",
-    "field_text": "reset"
+    "field_text": "reset",
+    "title_text": "white"
 }

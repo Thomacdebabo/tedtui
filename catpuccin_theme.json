@@ -31,5 +31,6 @@
     "filter_input": "#b4befe",
     "separator": "#313244",
     "no_results": "#6c7086",
-    "field_text": "#cdd6f4"
+    "field_text": "#cdd6f4",
+    "title_text": "#cdd6f4"
 }
