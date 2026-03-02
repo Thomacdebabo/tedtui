@@ -781,12 +781,17 @@ impl App {
 
     pub fn select_project(&mut self) {
         let filtered = self.get_filtered_projects();
-        if let Some(sel) = self.state.selected_project_index {
-            if let Some(&(_, project)) = filtered.get(sel) {
-                self.content.project_id = project.id.clone();
+        if let Some(selected_idx) = self.state.selected_project_index {
+            if let Some((original_idx, project)) = filtered.get(selected_idx) {
+                let project_id = project.id.clone();
+                let project_name = project.name.clone();
+                self.content.project_id = project_id;
+                self.state.show_project_selector = false;
+                self.state.project_filter.clear();
+                self.state.selected_project_index = None;
+                self.state.status_message = Some(format!("Selected project: {}", project_name));
             }
         }
-        self.state.show_project_selector = false;
     }
 
     pub fn move_project_selection_up(&mut self) {
