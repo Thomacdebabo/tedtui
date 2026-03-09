@@ -93,7 +93,7 @@ impl TodoData {
         }
 
         // Note section
-        content.push_str("# note\n");
+        content.push_str("# Note\n");
         if !self.note.is_empty() {
             content.push_str(&self.note);
             content.push('\n');

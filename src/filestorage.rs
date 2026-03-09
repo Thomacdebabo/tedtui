@@ -55,7 +55,8 @@ impl FileStorage {
     /// Examples: "ADM106_something.md" -> Some(106), "T00061_test.md" -> Some(61)
     fn extract_id_from_filename(&self, filename: &str) -> Option<u32> {
         // Match patterns like: PREFIX123_description.md or PREFIX00123_description.md
-        let re = Regex::new(r"^[A-Z]+(\d+)_").ok()?;
+        // Uses \p{L} to match any Unicode letter (e.g. Ä, Ö, Ü) in the prefix
+        let re = Regex::new(r"^\p{L}+(\d+)_").ok()?;
         if let Some(caps) = re.captures(filename) {
             if let Some(id_str) = caps.get(1) {
                 return id_str.as_str().parse::<u32>().ok();
@@ -74,62 +75,38 @@ impl FileStorage {
         }
 
         for entry in fs::read_dir(projects_dir)? {
-            let entry = entry?;
-            let path = entry.path();
+            let path = entry?.path();
 
-            if path.extension().and_then(|s| s.to_str()) == Some("md") {
-                if let Some(project) = self.parse_project_file(&path)? {
-                    projects.push(project);
-                }
+            if path.extension().and_then(|s| s.to_str()) != Some("md") {
+                continue;
+            }
+
+            if let Some(project) = self.parse_project_file(&path)? {
+                projects.push(project);
             }
         }
 
-        // Sort by ID
         projects.sort_by(|a, b| a.id.cmp(&b.id));
 
         Ok(projects)
     }
 
-    /// Parse a project file to extract metadata
+    /// Parse a project file to extract metadata from its content
     fn parse_project_file(&self, path: &Path) -> Result<Option<Project>, std::io::Error> {
-        let filename = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
-
-        // Parse filename: P00017_MOVE_Move.md
-        let re = match Regex::new(r"^(P\d+)(?:_([A-Z]+))?(?:_(.+))?\.md$") {
-            Ok(re) => re,
+        let content = match fs::read_to_string(path) {
+            Ok(c) => c,
             Err(_) => return Ok(None),
         };
 
-        let caps = match re.captures(filename) {
-            Some(caps) => caps,
-            None => return Ok(None),
-        };
-
-        let id = caps
-            .get(1)
-            .map(|m| m.as_str().to_string())
+        let id = self
+            .extract_frontmatter_field(&content, "id")
             .unwrap_or_default();
-        let shorthand_from_filename = caps.get(2).map(|m| m.as_str().to_string());
+        if id.is_empty() {
+            return Ok(None);
+        }
 
-        // Try to get name and shorthand from file content (the heading)
-        let (name, shorthand) = match fs::read_to_string(path) {
-            Ok(content) => {
-                let (extracted_shorthand, extracted_name) =
-                    self.extract_project_info_from_content(&content);
-                let final_name = extracted_name
-                    .or_else(|| caps.get(3).map(|m| m.as_str().to_string()))
-                    .unwrap_or_else(|| id.clone());
-                let final_shorthand = shorthand_from_filename.or(extracted_shorthand);
-                (final_name, final_shorthand)
-            }
-            Err(_) => {
-                let final_name = caps
-                    .get(3)
-                    .map(|m| m.as_str().to_string())
-                    .unwrap_or_else(|| id.clone());
-                (final_name, shorthand_from_filename)
-            }
-        };
+        let (shorthand, name) = self.extract_project_info_from_content(&content);
+        let name = name.unwrap_or_else(|| id.clone());
 
         Ok(Some(Project {
             id,
@@ -137,6 +114,30 @@ impl FileStorage {
             name,
             filepath: path.to_path_buf(),
         }))
+    }
+
+    /// Extract a field value from markdown frontmatter
+    fn extract_frontmatter_field(&self, content: &str, field: &str) -> Option<String> {
+        let mut in_frontmatter = false;
+        let prefix = format!("{}:", field);
+        for line in content.lines() {
+            if line.trim() == "---" {
+                if in_frontmatter {
+                    return None;
+                }
+                in_frontmatter = true;
+                continue;
+            }
+            if in_frontmatter {
+                if let Some(value) = line.strip_prefix(&prefix) {
+                    let val = value.trim().trim_matches('"').trim_matches('\'');
+                    if !val.is_empty() && val != "null" {
+                        return Some(val.to_string());
+                    }
+                }
+            }
+        }
+        None
     }
 
     /// Extract project name and shorthand from markdown content (from heading)
@@ -198,7 +199,8 @@ impl FileStorage {
         let projects_dir = self.ted_root.join("projects");
 
         if let Ok(entries) = fs::read_dir(projects_dir) {
-            let re = Regex::new(r"^P(\d+)").unwrap();
+            // Uses \p{L} to match any Unicode letter prefix (e.g. ÄDM, WGR, P)
+            let re = Regex::new(r"^\p{L}+(\d+)").unwrap();
             for entry in entries.flatten() {
                 let filename = entry.file_name().to_string_lossy().to_string();
                 if let Some(caps) = re.captures(&filename) {
@@ -225,15 +227,15 @@ impl FileStorage {
         fs::create_dir_all(&projects_dir)?;
 
         let next_id = self.get_next_project_id()?;
-        let id = format!("P{:05}", next_id);
+        let id = if !shorthand.is_empty() {
+            format!("{}{:05}", shorthand, next_id)
+        } else {
+            format!("P{:05}", next_id)
+        };
 
         // Build filename: P00005_SHORTHAND_sanitized_name.md or P00005_sanitized_name.md
         let sanitized = self.sanitize_name(name);
-        let filename = if !shorthand.is_empty() {
-            format!("{}_{}_{}.md", id, shorthand, sanitized)
-        } else {
-            format!("{}_{}.md", id, sanitized)
-        };
+        let filename = format!("{}_{}.md", id, sanitized);
 
         // Build heading: "# SHORTHAND: Name" or "# Name"
         let heading = if !shorthand.is_empty() {
@@ -263,7 +265,6 @@ impl FileStorage {
 
         Ok(filepath)
     }
-
     /// Get the todos directory path
     pub fn get_todos_dir(&self) -> PathBuf {
         self.ted_root.join("todos")

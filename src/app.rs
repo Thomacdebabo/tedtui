@@ -782,7 +782,7 @@ impl App {
     pub fn select_project(&mut self) {
         let filtered = self.get_filtered_projects();
         if let Some(selected_idx) = self.state.selected_project_index {
-            if let Some((original_idx, project)) = filtered.get(selected_idx) {
+            if let Some((_original_idx, project)) = filtered.get(selected_idx) {
                 let project_id = project.id.clone();
                 let project_name = project.name.clone();
                 self.content.project_id = project_id;
