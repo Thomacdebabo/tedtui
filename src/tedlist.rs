@@ -23,6 +23,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use serde_json;
 use theme::Theme;
 
 // ============================================================================
@@ -221,7 +222,7 @@ enum ViewAction {
     None,
     OpenEditor(PathBuf),
     NewTodo,
-    OpenInTedtui(PathBuf),
+    OpenInTedtui(InboxFile),
     DeleteFile(PathBuf),
     RunBackground(String),
 }
@@ -260,7 +261,7 @@ fn view_actions(app: &App) -> ViewActions {
         }
         PanelMode::Inbox => {
             let action = app.current_inbox()
-                .map(|f| ViewAction::OpenInTedtui(f.path.clone()))
+                .map(|f| ViewAction::OpenInTedtui(f.clone()))
                 .unwrap_or(ViewAction::None);
             ViewActions {
                 keys: vec![("Ctrl+E", "Open in tedtui"), ("d", "Delete"), ("u", "Run inbox")],
@@ -905,14 +906,71 @@ fn suspend_for_new_todo(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout
     Ok(())
 }
 
-fn suspend_for_tedtui(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, path: &Path) -> io::Result<()> {
+fn suspend_for_inbox_tedtui(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, inbox: &InboxFile) -> io::Result<()> {
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
     terminal.show_cursor()?;
+
+    let mut name = String::new();
+    let mut goal = String::new();
+    let mut timestamp = String::new();
+    let mut in_frontmatter = false;
+    let mut past_frontmatter = false;
+    let mut found_heading = false;
+
+    for line in inbox.content.lines() {
+        if line.trim() == "---" {
+            if in_frontmatter {
+                in_frontmatter = false;
+                past_frontmatter = true;
+            } else if !past_frontmatter {
+                in_frontmatter = true;
+            }
+            continue;
+        }
+        if in_frontmatter {
+            if let Some(val) = line.strip_prefix("timestamp:") {
+                timestamp = val.trim().to_string();
+            }
+            continue;
+        }
+        if past_frontmatter && !found_heading && line.starts_with("# ") {
+            name = line.trim_start_matches("# ").trim().to_string();
+            found_heading = true;
+            continue;
+        }
+        if found_heading {
+            if !goal.is_empty() { goal.push('\n'); }
+            goal.push_str(line);
+        }
+    }
+
+    if name.is_empty() {
+        name = inbox.name.clone();
+    }
+    goal = goal.trim().to_string();
+    if !timestamp.is_empty() {
+        if !goal.is_empty() { goal.push_str("\n\n"); }
+        goal.push_str(&format!("---\n*From inbox ({})*", timestamp));
+    }
+
+    let json = serde_json::json!({
+        "name": name,
+        "goal": goal,
+    });
+    let json_str = serde_json::to_string(&json).unwrap_or_else(|_| "{}".to_string());
+
     if let Some(tedtui) = find_tedtui() {
-        let status = Command::new(&tedtui).arg(path).stdin(Stdio::inherit()).stdout(Stdio::inherit()).stderr(Stdio::inherit()).status()?;
+        let status = Command::new(&tedtui)
+            .arg("--json")
+            .arg(&json_str)
+            .stdin(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .status()?;
         if !status.success() { eprintln!("tedtui exited with: {}", status) }
     } else { eprintln!("tedtui binary not found") }
+
     enable_raw_mode()?;
     execute!(terminal.backend_mut(), EnterAlternateScreen, EnableMouseCapture)?;
     terminal.clear()?;
@@ -935,7 +993,7 @@ fn main() -> io::Result<()> {
         terminal.draw(|f| render(&app, f)).map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{}", e)))?;
         match handle_events(&mut app)? {
             ViewAction::OpenEditor(path) => { suspend_for_editor(&mut terminal, &path)?; app.reload() }
-            ViewAction::OpenInTedtui(path) => { suspend_for_tedtui(&mut terminal, &path)?; app.reload() }
+            ViewAction::OpenInTedtui(inbox) => { suspend_for_inbox_tedtui(&mut terminal, &inbox)?; app.reload() }
             ViewAction::NewTodo => { suspend_for_new_todo(&mut terminal)?; app.reload() }
             ViewAction::DeleteFile(path) => {
                 let _ = fs::remove_file(&path);
