@@ -2,7 +2,7 @@
 
 set -e
 
-echo "🔨 Building tedtui in release mode..."
+echo "🔨 Building in release mode..."
 cargo build --release
 
 # Determine install location
@@ -19,9 +19,14 @@ echo "📦 Installing tedtui to $INSTALL_DIR..."
 cp target/release/tedtui "$INSTALL_DIR/tedtui"
 chmod +x "$INSTALL_DIR/tedtui"
 
+echo "📦 Installing tedlist to $INSTALL_DIR..."
+cp target/release/tedlist "$INSTALL_DIR/tedlist"
+chmod +x "$INSTALL_DIR/tedlist"
+
 echo "✅ Installation complete!"
 echo ""
-echo "tedtui has been installed to: $INSTALL_DIR/tedtui"
+echo "  tedtui installed to: $INSTALL_DIR/tedtui"
+echo "  tedlist installed to: $INSTALL_DIR/tedlist"
 
 # Check if the install directory is in PATH
 if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
@@ -31,5 +36,5 @@ if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
     echo "   export PATH=\"\$PATH:$INSTALL_DIR\""
 else
     echo ""
-    echo "You can now run 'tedtui' from anywhere!"
+    echo "You can now run 'tedtui' and 'tedlist' from anywhere!"
 fi
