@@ -365,7 +365,7 @@ fn render_help(app: &App, f: &mut Frame, area: Rect) {
         k("Tab"), Span::raw(" Focus  "),
         k("\u{2191}\u{2193}"), Span::raw(" Navigate  "),
         k("Enter"), Span::raw(" Detail  "),
-        k("Ctrl+Enter"), Span::raw(" Open  "),
+        k("Ctrl+E"), Span::raw(" Open  "),
         k("o"), Span::raw(" Overview  "),
         k("s"), Span::raw(" Sort  "),
         k("h"), Span::raw(" Hide  "),
@@ -528,23 +528,15 @@ fn handle_events(app: &mut App) -> io::Result<Option<PathBuf>> {
         app.show_overview = false;
         return Ok(None);
     }
-    if app.focus == Focus::Todos && !app.current_todos().is_empty() {
-        if key.code == KeyCode::Enter && key.modifiers.contains(KeyModifiers::CONTROL) {
-            return Ok(Some(app.current_todos()[app.selected_todo].path.clone()));
-        }
-    }
-
     match key.code {
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => app.quit = true,
         KeyCode::Char('q') | KeyCode::Esc => app.quit = true,
         KeyCode::Tab | KeyCode::BackTab => toggle_focus(app),
         KeyCode::Up => navigate_up(app),
         KeyCode::Down => navigate_down(app),
-        KeyCode::Enter => {
-            if app.focus == Focus::Todos && !app.current_todos().is_empty() {
-                app.show_detail = true;
-                app.detail_scroll = 0;
-            }
+        KeyCode::Enter => open_detail(app),
+        KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            return Ok(open_in_tedtui(app));
         }
         KeyCode::Char('o') | KeyCode::Char('O') => {
             if !app.current_todos().is_empty() {
@@ -619,6 +611,21 @@ fn toggle_empty(app: &mut App) {
     app.selected_todo = 0;
 }
 
+fn open_detail(app: &mut App) {
+    if app.focus == Focus::Todos && !app.current_todos().is_empty() {
+        app.show_detail = true;
+        app.detail_scroll = 0;
+    }
+}
+
+fn open_in_tedtui(app: &App) -> Option<PathBuf> {
+    if app.focus == Focus::Todos && !app.current_todos().is_empty() {
+        Some(app.current_todos()[app.selected_todo].path.clone())
+    } else {
+        None
+    }
+}
+
 // ============================================================================
 // Terminal suspend/resume for launching tedtui
 // ============================================================================
@@ -644,6 +651,7 @@ fn suspend_and_open(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, 
 
     enable_raw_mode()?;
     execute!(terminal.backend_mut(), EnterAlternateScreen, EnableMouseCapture)?;
+    terminal.clear()?;
     Ok(())
 }
 
