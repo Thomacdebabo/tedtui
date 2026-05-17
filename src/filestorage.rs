@@ -8,6 +8,7 @@ pub struct Project {
     pub id: String,
     pub shorthand: Option<String>,
     pub name: String,
+    #[allow(dead_code)]
     pub filepath: PathBuf,
 }
 
