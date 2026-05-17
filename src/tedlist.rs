@@ -217,14 +217,18 @@ impl SortMode {
 // Per-view actions
 // ============================================================================
 
+type PanelAction = fn(&mut App) -> Option<ViewAction>;
+
 #[derive(Clone)]
 enum ViewAction {
     None,
     OpenEditor(PathBuf),
     NewTodo,
     OpenInTedtui(InboxFile),
+    EditInTedtui(PathBuf),
     DeleteFile(PathBuf),
     RunBackground(String),
+    Action(PanelAction),
 }
 
 struct ViewActions {
@@ -236,7 +240,7 @@ fn view_actions(app: &App) -> ViewActions {
     match app.panel_mode {
         PanelMode::Projects => {
             let action = app.current_todos().get(app.selected_todo)
-                .map(|t| ViewAction::OpenEditor(t.path.clone()))
+                .map(|t| ViewAction::EditInTedtui(t.path.clone()))
                 .unwrap_or(ViewAction::None);
             ViewActions {
                 keys: vec![
@@ -268,6 +272,55 @@ fn view_actions(app: &App) -> ViewActions {
                 action,
             }
         }
+    }
+}
+
+fn overview_action(app: &mut App) -> Option<ViewAction> {
+    if !app.current_todos().is_empty() { app.show_overview = true }
+    None
+}
+
+fn sort_action(app: &mut App) -> Option<ViewAction> {
+    app.sort_mode = app.sort_mode.next();
+    app.resort();
+    None
+}
+
+fn toggle_empty_action(app: &mut App) -> Option<ViewAction> {
+    toggle_empty(app);
+    None
+}
+
+fn inbox_delete_action(app: &mut App) -> Option<ViewAction> {
+    if app.focus == Focus::Content {
+        if let Some(file) = app.current_inbox() {
+            app.confirm_delete = Some(file.path.clone());
+        }
+    }
+    None
+}
+
+fn inbox_update_action(_app: &mut App) -> Option<ViewAction> {
+    Some(ViewAction::RunBackground("ted inbox".to_string()))
+}
+
+fn panel_actions(app: &App) -> Vec<(KeyCode, ViewAction)> {
+    match app.panel_mode {
+        PanelMode::Projects => vec![
+            (KeyCode::Char('o'), ViewAction::Action(overview_action)),
+            (KeyCode::Char('O'), ViewAction::Action(overview_action)),
+            (KeyCode::Char('s'), ViewAction::Action(sort_action)),
+            (KeyCode::Char('S'), ViewAction::Action(sort_action)),
+            (KeyCode::Char('h'), ViewAction::Action(toggle_empty_action)),
+            (KeyCode::Char('H'), ViewAction::Action(toggle_empty_action)),
+        ],
+        PanelMode::Plans => vec![],
+        PanelMode::Inbox => vec![
+            (KeyCode::Char('d'), ViewAction::Action(inbox_delete_action)),
+            (KeyCode::Char('D'), ViewAction::Action(inbox_delete_action)),
+            (KeyCode::Char('u'), ViewAction::Action(inbox_update_action)),
+            (KeyCode::Char('U'), ViewAction::Action(inbox_update_action)),
+        ],
     }
 }
 
@@ -837,24 +890,18 @@ fn handle_events(app: &mut App) -> io::Result<ViewAction> {
             return Ok(view_actions(app).action);
         }
         KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => return Ok(ViewAction::NewTodo),
-        KeyCode::Char('o') | KeyCode::Char('O') => {
-            if app.panel_mode == PanelMode::Projects && !app.current_todos().is_empty() { app.show_overview = true }
-        }
-        KeyCode::Char('s') | KeyCode::Char('S') => { app.sort_mode = app.sort_mode.next(); app.resort() }
-        KeyCode::Char('h') | KeyCode::Char('H') => toggle_empty(app),
-        KeyCode::Char('d') | KeyCode::Char('D') => {
-            if app.panel_mode == PanelMode::Inbox && app.focus == Focus::Content {
-                if let Some(file) = app.current_inbox() {
-                    app.confirm_delete = Some(file.path.clone());
+        _ => {
+            for (k, action) in panel_actions(app) {
+                if k == key.code {
+                    if let ViewAction::Action(f) = action {
+                        if let Some(result) = f(app) {
+                            return Ok(result);
+                        }
+                    }
+                    break;
                 }
             }
         }
-        KeyCode::Char('u') | KeyCode::Char('U') => {
-            if app.panel_mode == PanelMode::Inbox {
-                return Ok(ViewAction::RunBackground("ted inbox".to_string()));
-            }
-        }
-        _ => {}
     }
     Ok(ViewAction::None)
 }
@@ -898,6 +945,24 @@ fn suspend_for_new_todo(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout
     terminal.show_cursor()?;
     if let Some(tedtui) = find_tedtui() {
         let status = Command::new(&tedtui).stdin(Stdio::inherit()).stdout(Stdio::inherit()).stderr(Stdio::inherit()).status()?;
+        if !status.success() { eprintln!("tedtui exited with: {}", status) }
+    } else { eprintln!("tedtui binary not found") }
+    enable_raw_mode()?;
+    execute!(terminal.backend_mut(), EnterAlternateScreen, EnableMouseCapture)?;
+    terminal.clear()?;
+    Ok(())
+}
+
+fn suspend_for_tedtui(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, file: &PathBuf) -> io::Result<()> {
+    disable_raw_mode()?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
+    terminal.show_cursor()?;
+    if let Some(tedtui) = find_tedtui() {
+        let status = Command::new(&tedtui).arg(file)
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()?;
         if !status.success() { eprintln!("tedtui exited with: {}", status) }
     } else { eprintln!("tedtui binary not found") }
     enable_raw_mode()?;
@@ -994,6 +1059,7 @@ fn main() -> io::Result<()> {
         match handle_events(&mut app)? {
             ViewAction::OpenEditor(path) => { suspend_for_editor(&mut terminal, &path)?; app.reload() }
             ViewAction::OpenInTedtui(inbox) => { suspend_for_inbox_tedtui(&mut terminal, &inbox)?; app.reload() }
+            ViewAction::EditInTedtui(tedtuifile) => {suspend_for_tedtui(&mut terminal, &tedtuifile)?; app.reload()}
             ViewAction::NewTodo => { suspend_for_new_todo(&mut terminal)?; app.reload() }
             ViewAction::DeleteFile(path) => {
                 let _ = fs::remove_file(&path);
@@ -1003,7 +1069,7 @@ fn main() -> io::Result<()> {
                 let _ = Command::new("sh").arg("-c").arg(&cmd).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status();
                 app.reload();
             }
-            ViewAction::None => {}
+            ViewAction::None | ViewAction::Action(_) => {}
         }
     }
 
