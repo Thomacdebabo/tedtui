@@ -15,7 +15,7 @@ use ratatui::{
     Frame, Terminal,
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Modifier, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List as TuiList, ListItem, Paragraph},
 };
@@ -33,6 +33,7 @@ use theme::Theme;
 struct TodoFile {
     path: PathBuf,
     parsed: parser::ParsedTodo,
+    project_tag: Option<String>,
 }
 
 impl TodoFile {
@@ -84,18 +85,20 @@ impl TodoStore {
                     continue;
                 }
                 let Ok(parsed) = parse_markdown_file(&path) else { continue };
-                let todo = TodoFile { path, parsed };
-                if todo.parsed.project_id.is_empty() {
+                let pid = parsed.project_id.clone();
+                let project_tag = if pid.is_empty() {
+                    None
+                } else {
+                    groups.iter().find(|g| g.project.id == pid).map(|g| g.project.name.clone())
+                };
+                let todo = TodoFile { path, parsed, project_tag };
+                if pid.is_empty() {
                     unassigned.push(todo);
-                    continue;
-                } 
-                let pos = groups.iter().position(|g| g.project.id == todo.parsed.project_id);
-                if let Some(idx) = pos {
+                } else if let Some(idx) = groups.iter().position(|g| g.project.id == pid) {
                     groups[idx].todos.push(todo);
                 } else {
                     unassigned.push(todo);
                 }
-                
             }
         }
 
@@ -357,14 +360,35 @@ fn render_todos(app: &App, f: &mut Frame, area: Rect) {
         return;
     }
 
+    let show_project_tag = app.selected_project == 0;
     let items: Vec<ListItem> = todos
         .iter()
         .enumerate()
         .map(|(i, todo)| {
+            let ch = todo.status_indicator();
+            let check = if ch == "\u{2713}" { "\u{2713} " } else { "  " };
             let suffix = todo.completion_summary().map(|s| format!(" [{}]", s)).unwrap_or_default();
-            let prefix = todo.status_indicator();
-            let text = format!(" {}{}{}", if prefix == "\u{2713}" { "\u{2713} " } else { "  " }, todo.parsed.name, suffix);
             let highlight = app.focus == Focus::Todos && i == app.selected_todo;
+
+            let line = if show_project_tag {
+                let tag = todo.project_tag.as_deref().unwrap_or("?");
+                let tag_padded = if tag.len() > 10 {
+                    let truncated: String = tag.chars().take(7).collect();
+                    format!("{}...", truncated)
+                } else {
+                    format!("{:<10}", tag)
+                };
+                let tag_style = Style::default().fg(Color::Rgb(255, 165, 0));
+                Line::from(vec![
+                    Span::raw(" "),
+                    Span::styled(format!("[{}]", tag_padded), tag_style),
+                    Span::raw(format!(" {}{}", check, todo.parsed.name)),
+                    Span::raw(suffix),
+                ])
+            } else {
+                Line::from(format!(" {}{}{}", check, todo.parsed.name, suffix))
+            };
+
             let style = if highlight {
                 app.theme.selected_style()
             } else if todo.is_complete() {
@@ -372,7 +396,7 @@ fn render_todos(app: &App, f: &mut Frame, area: Rect) {
             } else {
                 Style::default()
             };
-            ListItem::new(text).style(style)
+            ListItem::new(line).style(style)
         })
         .collect();
 
