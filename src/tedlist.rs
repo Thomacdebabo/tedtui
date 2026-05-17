@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 mod filestorage;
 mod parser;
 mod theme;
@@ -137,10 +135,6 @@ impl TodoStore {
         items
     }
 
-    fn entries_count(&self, show_empty_projects: bool) -> usize {
-        1 + self.visible_groups(show_empty_projects).len() + if self.unassigned.is_empty() { 0 } else { 1 }
-    }
-
     fn todos_for(&self, project_idx: usize, show_empty_projects: bool) -> &[TodoFile] {
         if project_idx == 0 { &self.all_todos }
         else if project_idx <= self.visible_groups(show_empty_projects).len() { &self.visible_groups(show_empty_projects)[project_idx - 1].todos }
@@ -208,16 +202,13 @@ impl SortMode {
         }
     }
 
-    fn label(self) -> &'static str {
-        match self { SortMode::Alpha => "A-Z", SortMode::MostTodos => "Most", SortMode::LeastTodos => "Least" }
-    }
 }
 
 // ============================================================================
 // Per-view actions
 // ============================================================================
 
-type PanelAction = fn(&mut App) -> Option<ViewAction>;
+type ActionFn = fn(&mut App) -> Option<ViewAction>;
 
 #[derive(Clone)]
 enum ViewAction {
@@ -228,50 +219,27 @@ enum ViewAction {
     EditInTedtui(PathBuf),
     DeleteFile(PathBuf),
     RunBackground(String),
-    Action(PanelAction),
+    Action(ActionFn),
 }
 
-struct ViewActions {
-    keys: Vec<(&'static str, &'static str)>,
-    action: ViewAction,
-}
-
-fn view_actions(app: &App) -> ViewActions {
+fn help_keys(app: &App) -> Vec<(&'static str, &'static str)> {
     match app.panel_mode {
-        PanelMode::Projects => {
-            let action = app.current_todos().get(app.selected_todo)
-                .map(|t| ViewAction::EditInTedtui(t.path.clone()))
-                .unwrap_or(ViewAction::None);
-            ViewActions {
-                keys: vec![
-                    ("Enter", "Detail"),
-                    ("Ctrl+E", "Edit"),
-                    ("Ctrl+N", "New"),
-                    ("o", "Ovw"),
-                    ("s", "Sort"),
-                    ("h", "Hide"),
-                ],
-                action,
-            }
-        }
-        PanelMode::Plans => {
-            let action = app.current_plan()
-                .map(|p| ViewAction::OpenEditor(p.path.clone()))
-                .unwrap_or(ViewAction::None);
-            ViewActions {
-                keys: vec![("Ctrl+E", "Edit")],
-                action,
-            }
-        }
-        PanelMode::Inbox => {
-            let action = app.current_inbox()
-                .map(|f| ViewAction::OpenInTedtui(f.clone()))
-                .unwrap_or(ViewAction::None);
-            ViewActions {
-                keys: vec![("Ctrl+E", "Open in tedtui"), ("d", "Delete"), ("u", "Run inbox")],
-                action,
-            }
-        }
+        PanelMode::Projects => vec![
+            ("Enter", "Detail"),
+            ("Ctrl+E", "Edit"),
+            ("Ctrl+N", "New"),
+            ("o", "Ovw"),
+            ("s", "Sort"),
+            ("h", "Hide"),
+        ],
+        PanelMode::Plans => vec![
+            ("Ctrl+E", "Edit"),
+        ],
+        PanelMode::Inbox => vec![
+            ("Ctrl+E", "Open in tedtui"),
+            ("d", "Delete"),
+            ("u", "Run inbox"),
+        ],
     }
 }
 
@@ -362,14 +330,18 @@ fn global_left_action(app: &mut App) -> Option<ViewAction> {
 }
 
 fn global_edit_action(app: &mut App) -> Option<ViewAction> {
-    Some(view_actions(app).action)
+    match app.panel_mode {
+        PanelMode::Projects => app.current_todos().get(app.selected_todo).map(|t| ViewAction::EditInTedtui(t.path.clone())),
+        PanelMode::Plans => app.current_plan().map(|p| ViewAction::OpenEditor(p.path.clone())),
+        PanelMode::Inbox => app.current_inbox().map(|f| ViewAction::OpenInTedtui(f.clone())),
+    }
 }
 
 fn global_new_todo_action(_app: &mut App) -> Option<ViewAction> {
     Some(ViewAction::NewTodo)
 }
 
-fn global_bindings() -> Vec<(KeyCode, KeyModifiers, PanelAction)> {
+fn global_bindings() -> Vec<(KeyCode, KeyModifiers, ActionFn)> {
     vec![
         (KeyCode::Char('q'), KeyModifiers::NONE, quit_action),
         (KeyCode::Esc, KeyModifiers::NONE, quit_action),
@@ -751,14 +723,13 @@ fn key_label(text: &str, t: &Theme) -> Span<'static> {
 fn render_help(app: &App, f: &mut Frame, area: Rect) {
     let t = &app.theme;
     let k = |s| key_label(s, t);
-    let va = view_actions(app);
 
     let mut spans: Vec<Span> = vec![
         k("Tab"), Span::raw(" Fcs  "),
         k("p"), Span::raw(" Mod  "),
         k("\u{2191}\u{2193}"), Span::raw(" Nav  "),
     ];
-    for (key, desc) in &va.keys {
+    for (key, desc) in help_keys(app) {
         spans.push(k(key));
         spans.push(Span::raw(format!(" {}  ", desc)));
     }
@@ -925,12 +896,9 @@ fn handle_events(app: &mut App) -> io::Result<ViewAction> {
 
     if app.show_detail { handle_detail_key(app, key.code); return Ok(ViewAction::None) }
     if app.show_overview { app.show_overview = false; return Ok(ViewAction::None) }
-    if app.confirm_delete.is_some() {
-        match key.code {
-            KeyCode::Char('y') | KeyCode::Char('Y') => {
-                if let Some(path) = app.confirm_delete.take() { return Ok(ViewAction::DeleteFile(path)) }
-            }
-            _ => { app.confirm_delete = None; }
+    if let Some(path) = app.confirm_delete.take() {
+        if matches!(key.code, KeyCode::Char('y') | KeyCode::Char('Y')) {
+            return Ok(ViewAction::DeleteFile(path))
         }
         return Ok(ViewAction::None);
     }
@@ -1005,7 +973,7 @@ fn suspend_for_new_todo(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout
     Ok(())
 }
 
-fn suspend_for_tedtui(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, file: &PathBuf) -> io::Result<()> {
+fn suspend_for_tedtui(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, file: &Path) -> io::Result<()> {
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
     terminal.show_cursor()?;
@@ -1023,35 +991,25 @@ fn suspend_for_tedtui(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>
     Ok(())
 }
 
-fn suspend_for_inbox_tedtui(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, inbox: &InboxFile) -> io::Result<()> {
-    disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
-    terminal.show_cursor()?;
-
+fn parse_inbox_content(content: &str, fallback_name: &str) -> (String, String) {
     let mut name = String::new();
     let mut goal = String::new();
     let mut timestamp = String::new();
-    let mut in_frontmatter = false;
-    let mut past_frontmatter = false;
+    let mut in_fm = false;
+    let mut past_fm = false;
     let mut found_heading = false;
 
-    for line in inbox.content.lines() {
+    for line in content.lines() {
         if line.trim() == "---" {
-            if in_frontmatter {
-                in_frontmatter = false;
-                past_frontmatter = true;
-            } else if !past_frontmatter {
-                in_frontmatter = true;
-            }
+            if in_fm { in_fm = false; past_fm = true }
+            else if !past_fm { in_fm = true }
             continue;
         }
-        if in_frontmatter {
-            if let Some(val) = line.strip_prefix("timestamp:") {
-                timestamp = val.trim().to_string();
-            }
+        if in_fm {
+            if let Some(val) = line.strip_prefix("timestamp:") { timestamp = val.trim().to_string() }
             continue;
         }
-        if past_frontmatter && !found_heading && line.starts_with("# ") {
+        if past_fm && !found_heading && line.starts_with("# ") {
             name = line.trim_start_matches("# ").trim().to_string();
             found_heading = true;
             continue;
@@ -1062,19 +1020,23 @@ fn suspend_for_inbox_tedtui(terminal: &mut Terminal<CrosstermBackend<std::io::St
         }
     }
 
-    if name.is_empty() {
-        name = inbox.name.clone();
-    }
+    if name.is_empty() { name = fallback_name.to_string() }
     goal = goal.trim().to_string();
     if !timestamp.is_empty() {
         if !goal.is_empty() { goal.push_str("\n\n"); }
         goal.push_str(&format!("---\n*From inbox ({})*", timestamp));
     }
+    (name, goal)
+}
 
-    let json = serde_json::json!({
-        "name": name,
-        "goal": goal,
-    });
+fn suspend_for_inbox_tedtui(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, inbox: &InboxFile) -> io::Result<()> {
+    disable_raw_mode()?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
+    terminal.show_cursor()?;
+
+    let (name, goal) = parse_inbox_content(&inbox.content, &inbox.name);
+
+    let json = serde_json::json!({ "name": name, "goal": goal });
     let json_str = serde_json::to_string(&json).unwrap_or_else(|_| "{}".to_string());
 
     if let Some(tedtui) = find_tedtui() {
