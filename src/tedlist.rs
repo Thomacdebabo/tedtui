@@ -246,6 +246,27 @@ impl App {
         }
     }
 
+    fn reload(&mut self) {
+        self.show_detail = false;
+        self.show_overview = false;
+        let prev_project = self.store.name_for(self.selected_project, self.show_empty_projects).to_string();
+        let prev_todo = self.current_todos().get(self.selected_todo).map(|t| t.parsed.name.clone());
+
+        if let Ok(store) = TodoStore::load() {
+            self.store = store;
+        }
+        self.resort();
+
+        self.selected_project = self.store.entries(self.show_empty_projects)
+            .iter()
+            .position(|(n, _)| *n == prev_project)
+            .unwrap_or(0);
+        self.selected_todo = self.current_todos()
+            .iter()
+            .position(|t| Some(t.parsed.name.as_str()) == prev_todo.as_deref())
+            .unwrap_or(0);
+    }
+
     fn panel_style(&self, panel: Focus) -> Style {
         if self.focus == panel {
             self.theme.active_border_style()
@@ -365,7 +386,8 @@ fn render_help(app: &App, f: &mut Frame, area: Rect) {
         k("Tab"), Span::raw(" Focus  "),
         k("\u{2191}\u{2193}"), Span::raw(" Navigate  "),
         k("Enter"), Span::raw(" Detail  "),
-        k("Ctrl+E"), Span::raw(" Open  "),
+        k("Ctrl+E"), Span::raw(" Edit  "),
+        k("Ctrl+N"), Span::raw(" New  "),
         k("o"), Span::raw(" Overview  "),
         k("s"), Span::raw(" Sort  "),
         k("h"), Span::raw(" Hide  "),
@@ -517,16 +539,22 @@ fn find_tedtui() -> Option<PathBuf> {
 // Event handling
 // ============================================================================
 
-fn handle_events(app: &mut App) -> io::Result<Option<PathBuf>> {
-    let Event::Key(key) = event::read()? else { return Ok(None) };
+enum Action {
+    None,
+    OpenFile(PathBuf),
+    NewTodo,
+}
+
+fn handle_events(app: &mut App) -> io::Result<Action> {
+    let Event::Key(key) = event::read()? else { return Ok(Action::None) };
 
     if app.show_detail {
         handle_detail_key(app, key.code);
-        return Ok(None);
+        return Ok(Action::None);
     }
     if app.show_overview {
         app.show_overview = false;
-        return Ok(None);
+        return Ok(Action::None);
     }
     match key.code {
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => app.quit = true,
@@ -537,6 +565,9 @@ fn handle_events(app: &mut App) -> io::Result<Option<PathBuf>> {
         KeyCode::Enter => open_detail(app),
         KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             return Ok(open_in_tedtui(app));
+        }
+        KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            return Ok(Action::NewTodo);
         }
         KeyCode::Char('o') | KeyCode::Char('O') => {
             if !app.current_todos().is_empty() {
@@ -550,7 +581,7 @@ fn handle_events(app: &mut App) -> io::Result<Option<PathBuf>> {
         KeyCode::Char('h') | KeyCode::Char('H') => toggle_empty(app),
         _ => {}
     }
-    Ok(None)
+    Ok(Action::None)
 }
 
 fn handle_detail_key(app: &mut App, code: KeyCode) {
@@ -618,11 +649,11 @@ fn open_detail(app: &mut App) {
     }
 }
 
-fn open_in_tedtui(app: &App) -> Option<PathBuf> {
+fn open_in_tedtui(app: &App) -> Action {
     if app.focus == Focus::Todos && !app.current_todos().is_empty() {
-        Some(app.current_todos()[app.selected_todo].path.clone())
+        Action::OpenFile(app.current_todos()[app.selected_todo].path.clone())
     } else {
-        None
+        Action::None
     }
 }
 
@@ -630,18 +661,18 @@ fn open_in_tedtui(app: &App) -> Option<PathBuf> {
 // Terminal suspend/resume for launching tedtui
 // ============================================================================
 
-fn suspend_and_open(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, path: &Path) -> io::Result<()> {
+fn suspend_and_open(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, path: Option<&Path>) -> io::Result<()> {
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
     terminal.show_cursor()?;
 
     if let Some(tedtui) = find_tedtui() {
-        let status = Command::new(&tedtui)
-            .arg(path)
-            .stdin(Stdio::inherit())
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit())
-            .status()?;
+        let mut cmd = Command::new(&tedtui);
+        cmd.stdin(Stdio::inherit()).stdout(Stdio::inherit()).stderr(Stdio::inherit());
+        if let Some(p) = path {
+            cmd.arg(p);
+        }
+        let status = cmd.status()?;
         if !status.success() {
             eprintln!("tedtui exited with: {}", status);
         }
@@ -671,8 +702,16 @@ fn main() -> io::Result<()> {
         terminal
             .draw(|f| render(&app, f))
             .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{}", e)))?;
-        if let Some(path) = handle_events(&mut app)? {
-            suspend_and_open(&mut terminal, &path)?;
+        match handle_events(&mut app)? {
+            Action::OpenFile(path) => {
+                suspend_and_open(&mut terminal, Some(&path))?;
+                app.reload();
+            }
+            Action::NewTodo => {
+                suspend_and_open(&mut terminal, None)?;
+                app.reload();
+            }
+            Action::None => {}
         }
     }
 
