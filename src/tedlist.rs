@@ -304,6 +304,93 @@ fn inbox_update_action(_app: &mut App) -> Option<ViewAction> {
     Some(ViewAction::RunBackground("ted inbox".to_string()))
 }
 
+// ============================================================================
+// Global key bindings (always active regardless of panel)
+// ============================================================================
+
+fn quit_action(app: &mut App) -> Option<ViewAction> { app.quit = true; None }
+
+fn toggle_focus_action(app: &mut App) -> Option<ViewAction> {
+    app.focus = if app.focus == Focus::Sidebar { Focus::Content } else { Focus::Sidebar };
+    None
+}
+
+fn cycle_panel_action(app: &mut App) -> Option<ViewAction> {
+    app.panel_mode = app.panel_mode.next();
+    app.selected_left = app.header_position(app.panel_mode);
+    None
+}
+
+fn global_up_action(app: &mut App) -> Option<ViewAction> {
+    if app.focus == Focus::Sidebar && app.selected_left > 0 {
+        app.selected_left -= 1; app.select_left(app.selected_left);
+    } else if app.focus == Focus::Content {
+        match app.panel_mode {
+            PanelMode::Projects => { if app.selected_todo > 0 { app.selected_todo -= 1 } }
+            PanelMode::Plans => { app.plan_scroll = app.plan_scroll.saturating_sub(1) }
+            PanelMode::Inbox => { app.inbox_scroll = app.inbox_scroll.saturating_sub(1) }
+        }
+    }
+    None
+}
+
+fn global_down_action(app: &mut App) -> Option<ViewAction> {
+    if app.focus == Focus::Sidebar {
+        let max = app.left_len();
+        if app.selected_left + 1 < max { app.selected_left += 1; app.select_left(app.selected_left) }
+    } else if app.focus == Focus::Content {
+        match app.panel_mode {
+            PanelMode::Projects => { if app.selected_todo + 1 < app.current_todos().len() { app.selected_todo += 1 } }
+            PanelMode::Plans => { app.plan_scroll += 1 }
+            PanelMode::Inbox => { app.inbox_scroll += 1 }
+        }
+    }
+    None
+}
+
+fn global_enter_action(app: &mut App) -> Option<ViewAction> {
+    if app.focus == Focus::Sidebar { app.select_left(app.selected_left); app.focus = Focus::Content }
+    else if app.panel_mode == PanelMode::Projects && !app.current_todos().is_empty() {
+        app.show_detail = true; app.detail_scroll = 0;
+    }
+    None
+}
+
+fn global_left_action(app: &mut App) -> Option<ViewAction> {
+    if app.focus == Focus::Content { app.focus = Focus::Sidebar }
+    None
+}
+
+fn global_edit_action(app: &mut App) -> Option<ViewAction> {
+    Some(view_actions(app).action)
+}
+
+fn global_new_todo_action(_app: &mut App) -> Option<ViewAction> {
+    Some(ViewAction::NewTodo)
+}
+
+fn global_bindings() -> Vec<(KeyCode, KeyModifiers, PanelAction)> {
+    vec![
+        (KeyCode::Char('q'), KeyModifiers::NONE, quit_action),
+        (KeyCode::Esc, KeyModifiers::NONE, quit_action),
+        (KeyCode::Char('c'), KeyModifiers::CONTROL, quit_action),
+        (KeyCode::Tab, KeyModifiers::NONE, toggle_focus_action),
+        (KeyCode::BackTab, KeyModifiers::NONE, toggle_focus_action),
+        (KeyCode::Char('p'), KeyModifiers::NONE, cycle_panel_action),
+        (KeyCode::Up, KeyModifiers::NONE, global_up_action),
+        (KeyCode::Down, KeyModifiers::NONE, global_down_action),
+        (KeyCode::Enter, KeyModifiers::NONE, global_enter_action),
+        (KeyCode::Right, KeyModifiers::NONE, global_enter_action),
+        (KeyCode::Left, KeyModifiers::NONE, global_left_action),
+        (KeyCode::Char('e'), KeyModifiers::CONTROL, global_edit_action),
+        (KeyCode::Char('n'), KeyModifiers::CONTROL, global_new_todo_action),
+    ]
+}
+
+// ============================================================================
+// Panel-specific key bindings
+// ============================================================================
+
 fn panel_actions(app: &App) -> Vec<(KeyCode, ViewAction)> {
     match app.panel_mode {
         PanelMode::Projects => vec![
@@ -848,61 +935,26 @@ fn handle_events(app: &mut App) -> io::Result<ViewAction> {
         return Ok(ViewAction::None);
     }
 
-    match key.code {
-        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => app.quit = true,
-        KeyCode::Char('q') | KeyCode::Esc => app.quit = true,
-        KeyCode::Tab | KeyCode::BackTab => app.focus = if app.focus == Focus::Sidebar { Focus::Content } else { Focus::Sidebar },
-        KeyCode::Char('p') => {
-            app.panel_mode = app.panel_mode.next();
-            app.selected_left = app.header_position(app.panel_mode);
-        }
-        KeyCode::Up => {
-            if app.focus == Focus::Sidebar && app.selected_left > 0 {
-                app.selected_left -= 1; app.select_left(app.selected_left);
-            } else if app.focus == Focus::Content {
-                match app.panel_mode {
-                    PanelMode::Projects => { if app.selected_todo > 0 { app.selected_todo -= 1 } }
-                    PanelMode::Plans => { app.plan_scroll = app.plan_scroll.saturating_sub(1) }
-                    PanelMode::Inbox => { app.inbox_scroll = app.inbox_scroll.saturating_sub(1) }
-                }
+    for (kc, km, action) in global_bindings() {
+        if key.code == kc && key.modifiers == km {
+            if let Some(result) = action(app) {
+                return Ok(result);
             }
-        }
-        KeyCode::Down => {
-            if app.focus == Focus::Sidebar {
-                let max = app.left_len();
-                if app.selected_left + 1 < max { app.selected_left += 1; app.select_left(app.selected_left) }
-            } else if app.focus == Focus::Content {
-                match app.panel_mode {
-                    PanelMode::Projects => { if app.selected_todo + 1 < app.current_todos().len() { app.selected_todo += 1 } }
-                    PanelMode::Plans => { app.plan_scroll += 1 }
-                    PanelMode::Inbox => { app.inbox_scroll += 1 }
-                }
-            }
-        }
-        KeyCode::Enter | KeyCode::Right => {
-            if app.focus == Focus::Sidebar { app.select_left(app.selected_left); app.focus = Focus::Content }
-            else if app.panel_mode == PanelMode::Projects && !app.current_todos().is_empty() {
-                app.show_detail = true; app.detail_scroll = 0;
-            }
-        }
-        KeyCode::Left => { if app.focus == Focus::Content { app.focus = Focus::Sidebar } }
-        KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            return Ok(view_actions(app).action);
-        }
-        KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => return Ok(ViewAction::NewTodo),
-        _ => {
-            for (k, action) in panel_actions(app) {
-                if k == key.code {
-                    if let ViewAction::Action(f) = action {
-                        if let Some(result) = f(app) {
-                            return Ok(result);
-                        }
-                    }
-                    break;
-                }
-            }
+            break;
         }
     }
+
+    for (kc, action) in panel_actions(app) {
+        if key.code == kc {
+            if let ViewAction::Action(f) = action {
+                if let Some(result) = f(app) {
+                    return Ok(result);
+                }
+            }
+            break;
+        }
+    }
+
     Ok(ViewAction::None)
 }
 
