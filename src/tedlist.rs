@@ -473,7 +473,17 @@ impl App {
     fn current_inbox(&self) -> Option<&InboxFile> { self.inbox_files.get(self.selected_inbox) }
 
     fn search_matches(&self, text: &str) -> bool {
-        !self.search_active || self.search_query.is_empty() || text.to_lowercase().contains(&self.search_query.to_lowercase())
+        if !self.search_active || self.search_query.is_empty() { return true }
+        let lower = text.to_lowercase();
+        let q_lower = self.search_query.to_lowercase();
+        let mut chars = q_lower.chars();
+        let Some(mut c) = chars.next() else { return true };
+        for ch in lower.chars() {
+            if ch == c {
+                c = match chars.next() { Some(next) => next, None => return true };
+            }
+        }
+        false
     }
 
     fn resort(&mut self) {
