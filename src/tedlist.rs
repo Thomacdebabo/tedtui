@@ -361,6 +361,11 @@ fn global_new_todo_action(_app: &mut App) -> Option<ViewAction> {
     Some(ViewAction::NewTodo)
 }
 
+fn search_action(app: &mut App) -> Option<ViewAction> {
+    app.search_active = true;
+    None
+}
+
 fn global_bindings() -> Vec<(KeyCode, KeyModifiers, ActionFn)> {
     vec![
         (KeyCode::Char('q'), KeyModifiers::NONE, quit_action),
@@ -376,6 +381,7 @@ fn global_bindings() -> Vec<(KeyCode, KeyModifiers, ActionFn)> {
         (KeyCode::Left, KeyModifiers::NONE, global_left_action),
         (KeyCode::Char('e'), KeyModifiers::CONTROL, global_edit_action),
         (KeyCode::Char('n'), KeyModifiers::CONTROL, global_new_todo_action),
+        (KeyCode::Char('/'), KeyModifiers::NONE, search_action),
     ]
 }
 
@@ -428,6 +434,8 @@ struct App {
     show_overview: bool,
     sort_mode: SortMode,
     show_empty_projects: bool,
+    search_query: String,
+    search_active: bool,
     theme: Theme,
     quit: bool,
 }
@@ -453,6 +461,8 @@ impl App {
             show_overview: false,
             sort_mode: SortMode::Alpha,
             show_empty_projects: false,
+            search_query: String::new(),
+            search_active: false,
             theme: Theme::load(),
             quit: false,
         })
@@ -461,6 +471,10 @@ impl App {
     fn current_todos(&self) -> &[TodoFile] { self.store.todos_for(self.selected_project, self.show_empty_projects) }
     fn current_plan(&self) -> Option<&PlanFile> { self.plans.get(self.selected_plan) }
     fn current_inbox(&self) -> Option<&InboxFile> { self.inbox_files.get(self.selected_inbox) }
+
+    fn search_matches(&self, text: &str) -> bool {
+        !self.search_active || self.search_query.is_empty() || text.to_lowercase().contains(&self.search_query.to_lowercase())
+    }
 
     fn resort(&mut self) {
         match self.sort_mode {
@@ -551,8 +565,8 @@ impl App {
     fn mode_sub_labels(&self, mode: PanelMode) -> Vec<String> {
         match mode {
             PanelMode::Projects => self.store.entries(self.show_empty_projects).iter().map(|(n, c)| format!("{} ({})", n, c)).collect(),
-            PanelMode::Plans => self.plans.iter().map(|p| p.name.clone()).collect(),
-            PanelMode::Inbox => self.inbox_files.iter().map(|f| f.name.clone()).collect(),
+            PanelMode::Plans => self.plans.iter().filter(|p| self.search_matches(&p.name)).map(|p| p.name.clone()).collect(),
+            PanelMode::Inbox => self.inbox_files.iter().filter(|f| self.search_matches(&f.name)).map(|f| f.name.clone()).collect(),
         }
     }
 }
@@ -626,7 +640,9 @@ fn render(app: &App, f: &mut Frame) {
 
     render_left_panel(app, f, horiz[0]);
     render_right_panel(app, f, horiz[1]);
-    render_help(app, f, main[1]);
+
+    if app.search_active { render_search_bar(app, f, main[1]) }
+    else { render_help(app, f, main[1]) }
 
     if app.show_detail { render_detail(app, f, f.area()) }
     if app.show_overview { render_overview(app, f, f.area()) }
@@ -688,9 +704,14 @@ fn render_right_panel(app: &App, f: &mut Frame, area: Rect) {
 }
 
 fn render_todos_content(app: &App, f: &mut Frame, area: Rect) {
-    let todos = app.current_todos();
+    let todos_all = app.current_todos();
     let name = app.store.name_for(app.selected_project, app.show_empty_projects);
-    let title = format!(" {} ({}) ", name, todos.len());
+    let todos: Vec<&TodoFile> = if app.search_active && !app.search_query.is_empty() {
+        todos_all.iter().filter(|t| app.search_matches(&t.parsed.name)).collect()
+    } else {
+        todos_all.iter().collect()
+    };
+    let title = format!(" {} ({}/{}) ", name, todos.len(), todos_all.len());
     let right_active = app.focus == Focus::Content;
     let block = || Block::default().borders(Borders::ALL).title(title.as_str()).border_style(if right_active { app.theme.active_border_style() } else { app.theme.inactive_border_style() });
 
@@ -715,6 +736,24 @@ fn render_todos_content(app: &App, f: &mut Frame, area: Rect) {
     f.render_widget(TuiList::new(items).block(block()), area);
 }
 
+fn highlight_matches(line: &str, query: &str, base_style: Style, hl_style: Style) -> Line<'static> {
+    if query.is_empty() {
+        return Line::from(Span::styled(line.to_string(), base_style));
+    }
+    let lower = line.to_lowercase();
+    let lower_q = query.to_lowercase();
+    let mut spans = Vec::new();
+    let mut last = 0;
+    for (start, _) in lower.match_indices(&lower_q) {
+        if start > last { spans.push(Span::styled(line[last..start].to_string(), base_style)); }
+        spans.push(Span::styled(line[start..start + query.len()].to_string(), hl_style));
+        last = start + query.len();
+    }
+    if last < line.len() { spans.push(Span::styled(line[last..].to_string(), base_style)); }
+    if spans.is_empty() { spans.push(Span::styled(line.to_string(), base_style)); }
+    Line::from(spans)
+}
+
 fn render_file_content(app: &App, f: &mut Frame, area: Rect, label: &str, file: Option<(&str, &str)>, scroll: usize) {
     let right_active = app.focus == Focus::Content;
     let border = if right_active { app.theme.active_border_style() } else { app.theme.inactive_border_style() };
@@ -724,11 +763,14 @@ fn render_file_content(app: &App, f: &mut Frame, area: Rect, label: &str, file: 
         return;
     };
 
+    let hl = Style::default().bg(Color::Rgb(255, 255, 0)).fg(Color::Rgb(0, 0, 0));
+    let q = if app.search_active { &app.search_query } else { "" };
+
     let lines: Vec<Line> = content.lines().skip(scroll).take((area.height - 2) as usize).map(|line| {
-        if line.starts_with("# ") { Line::from(Span::styled(line.to_string(), Style::default().add_modifier(Modifier::BOLD))) }
-        else if line.starts_with("## ") { Line::from(Span::styled(line.to_string(), Style::default().fg(Color::Rgb(255, 165, 0)))) }
-        else if line.starts_with("- ") { Line::from(Span::styled(format!("  \u{2022} {}", &line[2..]), Style::default())) }
-        else { Line::from(line.to_string()) }
+        if line.starts_with("# ") { highlight_matches(line, q, Style::default().add_modifier(Modifier::BOLD), hl) }
+        else if line.starts_with("## ") { highlight_matches(line, q, Style::default().fg(Color::Rgb(255, 165, 0)), hl) }
+        else if line.starts_with("- ") { let s = format!("  \u{2022} {}", &line[2..]); highlight_matches(&s, q, Style::default(), hl) }
+        else { highlight_matches(line, q, Style::default(), hl) }
     }).collect();
     f.render_widget(
         Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(format!(" {} {} ", label.trim(), name)).border_style(border)).wrap(ratatui::widgets::Wrap { trim: false }),
@@ -750,6 +792,7 @@ fn render_help(app: &App, f: &mut Frame, area: Rect) {
         k("Tab"), Span::raw(" Fcs  "),
         k("p"), Span::raw(" Mod  "),
         k("\u{2191}\u{2193}"), Span::raw(" Nav  "),
+        k("/"), Span::raw(" Sch  "),
     ];
     for (key, desc) in help_keys(app) {
         spans.push(k(key));
@@ -761,6 +804,19 @@ fn render_help(app: &App, f: &mut Frame, area: Rect) {
     spans.push(Span::raw(" Quit"));
 
     f.render_widget(Paragraph::new(Line::from(spans)).block(Block::default().borders(Borders::ALL).title(" Help ")), area);
+}
+
+fn render_search_bar(app: &App, f: &mut Frame, area: Rect) {
+    let t = &app.theme;
+    let display = if app.search_query.is_empty() {
+        " Search: (type to filter)".to_string()
+    } else {
+        format!(" Search: {} ", app.search_query)
+    };
+    f.render_widget(
+        Paragraph::new(display.as_str()).block(Block::default().borders(Borders::ALL).title(" Search ").border_style(Style::default().fg(t.status_info))),
+        area,
+    );
 }
 
 // --- Detail overlay ---
@@ -921,6 +977,17 @@ fn handle_events(app: &mut App) -> io::Result<ViewAction> {
     if let Some(path) = app.confirm_delete.take() {
         if matches!(key.code, KeyCode::Char('y') | KeyCode::Char('Y')) {
             return Ok(ViewAction::DeleteFile(path))
+        }
+        return Ok(ViewAction::None);
+    }
+
+    if app.search_active {
+        match key.code {
+            KeyCode::Esc => { app.search_active = false; app.search_query.clear(); }
+            KeyCode::Enter => { app.search_active = false; }
+            KeyCode::Backspace => { app.search_query.pop(); }
+            KeyCode::Char(c) => { app.search_query.push(c); }
+            _ => {}
         }
         return Ok(ViewAction::None);
     }
