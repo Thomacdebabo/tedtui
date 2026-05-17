@@ -239,6 +239,7 @@ fn help_keys(app: &App) -> Vec<(&'static str, &'static str)> {
             ("Ctrl+E", "Open in tedtui"),
             ("d", "Delete"),
             ("u", "Run inbox"),
+            ("o", "Obsidian"),
         ],
     }
 }
@@ -270,6 +271,25 @@ fn inbox_delete_action(app: &mut App) -> Option<ViewAction> {
 
 fn inbox_update_action(_app: &mut App) -> Option<ViewAction> {
     Some(ViewAction::RunBackground("ted inbox".to_string()))
+}
+
+fn inbox_obsidian_action(app: &mut App) -> Option<ViewAction> {
+    let file = app.current_inbox()?;
+    let name = file.content.lines()
+        .find(|l| l.starts_with("# "))
+        .map(|l| l.trim_start_matches("# ").trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| file.name.clone());
+
+    let escaped = file.content
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('$', "\\$")
+        .replace('`', "\\`");
+
+    Some(ViewAction::RunBackground(format!(
+        "obsidian create name=\"{}\" content=\"{}\" open", name, escaped
+    )))
 }
 
 // ============================================================================
@@ -379,6 +399,8 @@ fn panel_actions(app: &App) -> Vec<(KeyCode, ViewAction)> {
             (KeyCode::Char('D'), ViewAction::Action(inbox_delete_action)),
             (KeyCode::Char('u'), ViewAction::Action(inbox_update_action)),
             (KeyCode::Char('U'), ViewAction::Action(inbox_update_action)),
+            (KeyCode::Char('o'), ViewAction::Action(inbox_obsidian_action)),
+            (KeyCode::Char('O'), ViewAction::Action(inbox_obsidian_action)),
         ],
     }
 }
