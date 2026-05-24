@@ -15,7 +15,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List as TuiList, ListItem, Paragraph},
+    widgets::{Block, Borders, Clear, List as TuiList, ListItem, ListState, Paragraph},
 };
 use std::fs;
 use std::io;
@@ -89,10 +89,8 @@ impl TodoStore {
 
         let mut unassigned = Vec::new();
 
-        if let Ok(entries) = fs::read_dir(todos_dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.extension().and_then(|s| s.to_str()) != Some("md") { continue }
+        if let Ok(entries) = collect_md_files(&todos_dir) {
+            for path in entries {
                 let Ok(parsed) = parse_markdown_file(&path) else { continue };
                 let pid = parsed.project_id.clone();
                 let project_tag = if pid.is_empty() {
@@ -152,6 +150,72 @@ fn sort_groups_alpha(groups: &mut [ProjectGroup]) {
     groups.sort_by(|a, b| a.project.name.cmp(&b.project.name));
 }
 
+struct BacklogStore {
+    groups: Vec<ProjectGroup>,
+    unassigned: Vec<TodoFile>,
+    all: Vec<TodoFile>,
+}
+
+impl BacklogStore {
+    fn load() -> Self {
+        let storage = filestorage::FileStorage::new();
+        let projects = storage.get_projects().unwrap_or_default();
+        let mut groups: Vec<ProjectGroup> = projects.into_iter()
+            .map(|p| ProjectGroup { project: p, todos: Vec::new() })
+            .collect();
+        let mut unassigned = Vec::new();
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+        let dir = Path::new(&home).join(".ted").join("backlog");
+        let mut all = Vec::new();
+        if let Ok(paths) = collect_md_files(&dir) {
+            for path in &paths {
+                if let Ok(parsed) = parse_markdown_file(&path) {
+                    let pid = parsed.project_id.clone();
+                    let project_tag = if pid.is_empty() {
+                        None
+                    } else {
+                        groups.iter().find(|g| g.project.id == pid).map(|g| g.project.name.clone())
+                    };
+                    let todo = TodoFile { path: path.clone(), parsed, project_tag };
+                    all.push(todo.clone());
+                    if pid.is_empty() {
+                        unassigned.push(todo);
+                    } else if let Some(idx) = groups.iter().position(|g| g.project.id == pid) {
+                        groups[idx].todos.push(todo);
+                    } else {
+                        unassigned.push(todo);
+                    }
+                }
+            }
+        }
+        for g in &mut groups { g.todos.sort_by(|a, b| a.parsed.name.cmp(&b.parsed.name)) }
+        unassigned.sort_by(|a, b| a.parsed.name.cmp(&b.parsed.name));
+        all.sort_by(|a, b| a.parsed.name.cmp(&b.parsed.name));
+        BacklogStore { groups, unassigned, all }
+    }
+
+    fn entries(&self) -> Vec<(String, usize)> {
+        let mut items = vec![("Backlog".to_string(), self.all.len())];
+        for g in &self.groups {
+            items.push((g.project.name.clone(), g.todos.len()));
+        }
+        if !self.unassigned.is_empty() { items.push(("Unassigned".to_string(), self.unassigned.len())) }
+        items
+    }
+
+    fn todos_for(&self, idx: usize) -> &[TodoFile] {
+        if idx == 0 { &self.all }
+        else if idx <= self.groups.len() { &self.groups[idx - 1].todos }
+        else { &self.unassigned }
+    }
+
+    fn name_for(&self, idx: usize) -> &str {
+        if idx == 0 { "Backlog" }
+        else if idx <= self.groups.len() { &self.groups[idx - 1].project.name }
+        else { "Unassigned" }
+    }
+}
+
 // ============================================================================
 // App state
 // ============================================================================
@@ -161,10 +225,11 @@ enum PanelMode {
     Projects,
     Plans,
     Inbox,
+    Backlog,
 }
 
 impl PanelMode {
-    const ALL: &'static [PanelMode] = &[PanelMode::Projects, PanelMode::Plans, PanelMode::Inbox];
+    const ALL: &'static [PanelMode] = &[PanelMode::Projects, PanelMode::Plans, PanelMode::Inbox, PanelMode::Backlog];
 
     fn next(self) -> Self {
         let idx = Self::ALL.iter().position(|m| *m == self).unwrap_or(0);
@@ -176,6 +241,7 @@ impl PanelMode {
             PanelMode::Projects => "Projects",
             PanelMode::Plans => "Plans",
             PanelMode::Inbox => "Inbox",
+            PanelMode::Backlog => "Backlog",
         }
     }
 }
@@ -218,7 +284,9 @@ enum ViewAction {
     OpenInTedtui(InboxFile),
     EditInTedtui(PathBuf),
     DeleteFile(PathBuf),
+    CompleteFile(PathBuf),
     RunBackground(String),
+    MoveFile(PathBuf, PathBuf),
     Action(ActionFn),
 }
 
@@ -228,6 +296,8 @@ fn help_keys(app: &App) -> Vec<(&'static str, &'static str)> {
             ("Enter", "Detail"),
             ("Ctrl+E", "Edit"),
             ("Ctrl+N", "New"),
+            ("Ctrl+D", "Done"),
+            ("Ctrl+B", "Bklog"),
             ("o", "Ovw"),
             ("s", "Sort"),
             ("h", "Hide"),
@@ -240,6 +310,11 @@ fn help_keys(app: &App) -> Vec<(&'static str, &'static str)> {
             ("d", "Delete"),
             ("u", "Run inbox"),
             ("o", "Obsidian"),
+        ],
+        PanelMode::Backlog => vec![
+            ("Enter", "Detail"),
+            ("Ctrl+E", "Edit"),
+            ("Ctrl+B", "Todos"),
         ],
     }
 }
@@ -316,7 +391,8 @@ fn global_up_action(app: &mut App) -> Option<ViewAction> {
         match app.panel_mode {
             PanelMode::Projects => { if app.selected_todo > 0 { app.selected_todo -= 1 } }
             PanelMode::Plans => { app.plan_scroll = app.plan_scroll.saturating_sub(1) }
-            PanelMode::Inbox => { app.inbox_scroll = app.inbox_scroll.saturating_sub(1) }
+                PanelMode::Inbox => { app.inbox_scroll = app.inbox_scroll.saturating_sub(1) }
+                PanelMode::Backlog => { if app.selected_todo > 0 { app.selected_todo -= 1 } }
         }
     }
     None
@@ -331,6 +407,7 @@ fn global_down_action(app: &mut App) -> Option<ViewAction> {
             PanelMode::Projects => { if app.selected_todo + 1 < app.current_todos().len() { app.selected_todo += 1 } }
             PanelMode::Plans => { app.plan_scroll += 1 }
             PanelMode::Inbox => { app.inbox_scroll += 1 }
+            PanelMode::Backlog => { if app.selected_todo + 1 < app.current_todos().len() { app.selected_todo += 1 } }
         }
     }
     None
@@ -338,7 +415,7 @@ fn global_down_action(app: &mut App) -> Option<ViewAction> {
 
 fn global_enter_action(app: &mut App) -> Option<ViewAction> {
     if app.focus == Focus::Sidebar { app.select_left(app.selected_left); app.focus = Focus::Content }
-    else if app.panel_mode == PanelMode::Projects && !app.current_todos().is_empty() {
+    else if matches!(app.panel_mode, PanelMode::Projects | PanelMode::Backlog) && !app.current_todos().is_empty() {
         app.show_detail = true; app.detail_scroll = 0;
     }
     None
@@ -354,11 +431,33 @@ fn global_edit_action(app: &mut App) -> Option<ViewAction> {
         PanelMode::Projects => app.current_todos().get(app.selected_todo).map(|t| ViewAction::EditInTedtui(t.path.clone())),
         PanelMode::Plans => app.current_plan().map(|p| ViewAction::OpenEditor(p.path.clone())),
         PanelMode::Inbox => app.current_inbox().map(|f| ViewAction::OpenInTedtui(f.clone())),
+        PanelMode::Backlog => app.current_todos().get(app.selected_todo).map(|t| ViewAction::EditInTedtui(t.path.clone())),
     }
 }
 
 fn global_new_todo_action(_app: &mut App) -> Option<ViewAction> {
     Some(ViewAction::NewTodo)
+}
+
+fn complete_todo_action(app: &mut App) -> Option<ViewAction> {
+    if app.panel_mode != PanelMode::Projects || app.focus != Focus::Content { return None }
+    let todo = app.current_todos().get(app.selected_todo)?;
+    if todo.parsed.tasks.iter().all(|t| t.completed) {
+        Some(ViewAction::CompleteFile(todo.path.clone()))
+    } else {
+        app.confirm_complete = Some(todo.path.clone());
+        None
+    }
+}
+
+fn move_to_backlog_action(app: &mut App) -> Option<ViewAction> {
+    if app.focus != Focus::Content { return None }
+    if !matches!(app.panel_mode, PanelMode::Projects | PanelMode::Backlog) { return None }
+    let todo = app.current_todos().get(app.selected_todo)?;
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    let is_backlog = app.panel_mode == PanelMode::Backlog;
+    let target_dir = Path::new(&home).join(".ted").join(if is_backlog { "todos" } else { "backlog" });
+    Some(ViewAction::MoveFile(todo.path.clone(), target_dir))
 }
 
 fn search_action(app: &mut App) -> Option<ViewAction> {
@@ -381,6 +480,8 @@ fn global_bindings() -> Vec<(KeyCode, KeyModifiers, ActionFn)> {
         (KeyCode::Left, KeyModifiers::NONE, global_left_action),
         (KeyCode::Char('e'), KeyModifiers::CONTROL, global_edit_action),
         (KeyCode::Char('n'), KeyModifiers::CONTROL, global_new_todo_action),
+        (KeyCode::Char('d'), KeyModifiers::CONTROL, complete_todo_action),
+        (KeyCode::Char('b'), KeyModifiers::CONTROL, move_to_backlog_action),
         (KeyCode::Char('/'), KeyModifiers::NONE, search_action),
     ]
 }
@@ -408,6 +509,7 @@ fn panel_actions(app: &App) -> Vec<(KeyCode, ViewAction)> {
             (KeyCode::Char('o'), ViewAction::Action(inbox_obsidian_action)),
             (KeyCode::Char('O'), ViewAction::Action(inbox_obsidian_action)),
         ],
+        PanelMode::Backlog => vec![],
     }
 }
 
@@ -417,6 +519,7 @@ fn panel_actions(app: &App) -> Vec<(KeyCode, ViewAction)> {
 
 struct App {
     store: TodoStore,
+    backlog_store: BacklogStore,
     plans: Vec<PlanFile>,
     inbox_files: Vec<InboxFile>,
     panel_mode: PanelMode,
@@ -429,11 +532,13 @@ struct App {
     plan_scroll: usize,
     inbox_scroll: usize,
     confirm_delete: Option<PathBuf>,
+    confirm_complete: Option<PathBuf>,
     show_detail: bool,
     detail_scroll: usize,
     show_overview: bool,
     sort_mode: SortMode,
     show_empty_projects: bool,
+    todo_list_state: ListState,
     search_query: String,
     search_active: bool,
     theme: Theme,
@@ -444,6 +549,7 @@ impl App {
     fn new() -> io::Result<Self> {
         Ok(App {
             store: TodoStore::load()?,
+            backlog_store: BacklogStore::load(),
             plans: load_plans(),
             inbox_files: load_inbox(),
             panel_mode: PanelMode::Projects,
@@ -456,11 +562,13 @@ impl App {
             plan_scroll: 0,
             inbox_scroll: 0,
             confirm_delete: None,
+            confirm_complete: None,
             show_detail: false,
             detail_scroll: 0,
             show_overview: false,
             sort_mode: SortMode::Alpha,
             show_empty_projects: false,
+            todo_list_state: ListState::default(),
             search_query: String::new(),
             search_active: false,
             theme: Theme::load(),
@@ -468,7 +576,12 @@ impl App {
         })
     }
 
-    fn current_todos(&self) -> &[TodoFile] { self.store.todos_for(self.selected_project, self.show_empty_projects) }
+    fn current_todos(&self) -> &[TodoFile] {
+        match self.panel_mode {
+            PanelMode::Backlog => self.backlog_store.todos_for(self.selected_project),
+            _ => self.store.todos_for(self.selected_project, self.show_empty_projects),
+        }
+    }
     fn current_plan(&self) -> Option<&PlanFile> { self.plans.get(self.selected_plan) }
     fn current_inbox(&self) -> Option<&InboxFile> { self.inbox_files.get(self.selected_inbox) }
 
@@ -502,6 +615,7 @@ impl App {
         let prev_project = self.store.name_for(self.selected_project, self.show_empty_projects).to_string();
         let prev_todo = self.current_todos().get(self.selected_todo).map(|t| t.parsed.name.clone());
         if let Ok(store) = TodoStore::load() { self.store = store }
+        self.backlog_store = BacklogStore::load();
         self.plans = load_plans();
         self.inbox_files = load_inbox();
         self.resort();
@@ -514,6 +628,7 @@ impl App {
             PanelMode::Projects => self.store.entries(self.show_empty_projects).len(),
             PanelMode::Plans => self.plans.len(),
             PanelMode::Inbox => self.inbox_files.len(),
+            PanelMode::Backlog => self.backlog_store.entries().len(),
         }
     }
 
@@ -568,6 +683,7 @@ impl App {
                 PanelMode::Projects => { self.selected_project = sub; self.selected_todo = 0; }
                 PanelMode::Plans => { self.selected_plan = sub; self.plan_scroll = 0; }
                 PanelMode::Inbox => { self.selected_inbox = sub; self.inbox_scroll = 0; }
+                PanelMode::Backlog => { self.selected_project = sub; self.selected_todo = 0; }
             }
         }
     }
@@ -575,8 +691,9 @@ impl App {
     fn mode_sub_labels(&self, mode: PanelMode) -> Vec<String> {
         match mode {
             PanelMode::Projects => self.store.entries(self.show_empty_projects).iter().map(|(n, c)| format!("{} ({})", n, c)).collect(),
-            PanelMode::Plans => self.plans.iter().filter(|p| self.search_matches(&p.name)).map(|p| p.name.clone()).collect(),
-            PanelMode::Inbox => self.inbox_files.iter().filter(|f| self.search_matches(&f.name)).map(|f| f.name.clone()).collect(),
+            PanelMode::Plans => self.plans.iter().filter(|p| self.search_matches(&p.name) || self.search_matches(&p.content)).map(|p| p.name.clone()).collect(),
+            PanelMode::Inbox => self.inbox_files.iter().filter(|f| self.search_matches(&f.name) || self.search_matches(&f.content)).map(|f| f.name.clone()).collect(),
+            PanelMode::Backlog => self.backlog_store.entries().iter().map(|(n, c)| format!("{} ({})", n, c)).collect(),
         }
     }
 }
@@ -585,13 +702,11 @@ fn load_plans() -> Vec<PlanFile> {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
     let dir = Path::new(&home).join(".ted").join("plans");
     let mut files = Vec::new();
-    if let Ok(entries) = fs::read_dir(dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|s| s.to_str()) != Some("md") { continue }
-            let name = entry.file_name().to_string_lossy().replace(".md", "");
-            let content = fs::read_to_string(&path).unwrap_or_default();
-            files.push(PlanFile { path, name, content });
+    if let Ok(paths) = collect_md_files(&dir) {
+        for path in &paths {
+            let name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_string();
+            let content = fs::read_to_string(path).unwrap_or_default();
+            files.push(PlanFile { path: path.clone(), name, content });
         }
     }
     files.sort_by(|a, b| a.name.cmp(&b.name));
@@ -602,13 +717,11 @@ fn load_inbox() -> Vec<InboxFile> {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
     let dir = Path::new(&home).join(".ted").join("inbox");
     let mut files = Vec::new();
-    if let Ok(entries) = fs::read_dir(dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|s| s.to_str()) != Some("md") { continue }
-            let name = entry.file_name().to_string_lossy().replace(".md", "");
-            let content = fs::read_to_string(&path).unwrap_or_default();
-            files.push(InboxFile { path, name, content });
+    if let Ok(paths) = collect_md_files(&dir) {
+        for path in &paths {
+            let name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_string();
+            let content = fs::read_to_string(path).unwrap_or_default();
+            files.push(InboxFile { path: path.clone(), name, content });
         }
     }
     files.sort_by(|a, b| a.name.cmp(&b.name));
@@ -618,6 +731,21 @@ fn load_inbox() -> Vec<InboxFile> {
 // ============================================================================
 // Helpers
 // ============================================================================
+
+fn collect_md_files(dir: &Path) -> io::Result<Vec<PathBuf>> {
+    let mut files = Vec::new();
+    if !dir.is_dir() { return Ok(files) }
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            files.extend(collect_md_files(&path)?);
+        } else if path.extension().and_then(|s| s.to_str()) == Some("md") {
+            files.push(path);
+        }
+    }
+    Ok(files)
+}
 
 fn centered_rect(area: Rect, width: u16, height: u16) -> Rect {
     let x = (area.width.saturating_sub(width)) / 2;
@@ -636,7 +764,7 @@ fn push_text(lines: &mut Vec<Line>, label: &str, content: &str, bold: Style, nor
 // Rendering
 // ============================================================================
 
-fn render(app: &App, f: &mut Frame) {
+fn render(app: &mut App, f: &mut Frame) {
     let main = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(0), Constraint::Length(3)])
@@ -657,6 +785,7 @@ fn render(app: &App, f: &mut Frame) {
     if app.show_detail { render_detail(app, f, f.area()) }
     if app.show_overview { render_overview(app, f, f.area()) }
     if app.confirm_delete.is_some() { render_confirm_delete(app, f, f.area()) }
+    if app.confirm_complete.is_some() { render_confirm_complete(app, f, f.area()) }
 }
 
 // --- Left panel ---
@@ -705,19 +834,32 @@ fn render_left_panel(app: &App, f: &mut Frame, area: Rect) {
 
 // --- Right panel ---
 
-fn render_right_panel(app: &App, f: &mut Frame, area: Rect) {
+fn render_right_panel(app: &mut App, f: &mut Frame, area: Rect) {
     match app.panel_mode {
         PanelMode::Projects => render_todos_content(app, f, area),
         PanelMode::Plans => render_file_content(app, f, area, " Plan ", app.current_plan().map(|p| (p.name.as_str(), p.content.as_str())), app.plan_scroll),
         PanelMode::Inbox => render_file_content(app, f, area, " Inbox ", app.current_inbox().map(|i| (i.name.as_str(), i.content.as_str())), app.inbox_scroll),
+        PanelMode::Backlog => render_todos_content(app, f, area),
     }
 }
 
-fn render_todos_content(app: &App, f: &mut Frame, area: Rect) {
+fn render_todos_content(app: &mut App, f: &mut Frame, area: Rect) {
     let todos_all = app.current_todos();
-    let name = app.store.name_for(app.selected_project, app.show_empty_projects);
+    let name = if app.panel_mode == PanelMode::Backlog {
+        app.backlog_store.name_for(app.selected_project).to_string()
+    } else {
+        app.store.name_for(app.selected_project, app.show_empty_projects).to_string()
+    };
     let todos: Vec<&TodoFile> = if app.search_active && !app.search_query.is_empty() {
-        todos_all.iter().filter(|t| app.search_matches(&t.parsed.name)).collect()
+        todos_all.iter().filter(|t| {
+            app.search_matches(&t.parsed.name)
+            || app.search_matches(&t.parsed.project_id)
+            || app.search_matches(&t.parsed.info)
+            || app.search_matches(&t.parsed.goal)
+            || t.parsed.tasks.iter().any(|task| app.search_matches(&task.text))
+            || app.search_matches(&t.parsed.note)
+            || app.search_matches(&t.parsed.history)
+        }).collect()
     } else {
         todos_all.iter().collect()
     };
@@ -743,7 +885,9 @@ fn render_todos_content(app: &App, f: &mut Frame, area: Rect) {
         let style = if highlight { app.theme.selected_style() } else if todo.is_complete() { Style::default().fg(app.theme.task_completed) } else { Style::default() };
         ListItem::new(line).style(style)
     }).collect();
-    f.render_widget(TuiList::new(items).block(block()), area);
+    if app.selected_todo >= todos.len() { app.selected_todo = todos.len().saturating_sub(1) }
+    app.todo_list_state.select(Some(app.selected_todo));
+    f.render_stateful_widget(TuiList::new(items).block(block()), area, &mut app.todo_list_state);
 }
 
 fn highlight_matches(line: &str, query: &str, base_style: Style, hl_style: Style) -> Line<'static> {
@@ -802,6 +946,7 @@ fn render_help(app: &App, f: &mut Frame, area: Rect) {
         k("Tab"), Span::raw(" Fcs  "),
         k("p"), Span::raw(" Mod  "),
         k("\u{2191}\u{2193}"), Span::raw(" Nav  "),
+        k("Ctrl+B"), Span::raw(" Mv  "),
         k("/"), Span::raw(" Sch  "),
     ];
     for (key, desc) in help_keys(app) {
@@ -904,7 +1049,11 @@ fn render_overview(app: &App, f: &mut Frame, area: Rect) {
     }
 
     let task_summary = if total_tasks > 0 { format!("{}/{}", done_tasks, total_tasks) } else { "n/a".to_string() };
-    let name = app.store.name_for(app.selected_project, app.show_empty_projects);
+    let name = if app.panel_mode == PanelMode::Backlog {
+        app.backlog_store.name_for(app.selected_project)
+    } else {
+        app.store.name_for(app.selected_project, app.show_empty_projects)
+    };
 
     let lines = vec![
         Line::from(""),
@@ -950,6 +1099,29 @@ fn render_confirm_delete(app: &App, f: &mut Frame, area: Rect) {
     );
 }
 
+fn render_confirm_complete(app: &App, f: &mut Frame, area: Rect) {
+    let popup = centered_rect(area, 50, 7);
+    f.render_widget(Clear, popup);
+    let t = &app.theme;
+    let lines = vec![
+        Line::from(""),
+        Line::from(Span::styled(" Mark all tasks done and move to ~/.ted/done/?", Style::default().fg(t.popup_text))),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  y", Style::default().fg(t.status_success)),
+            Span::raw("es  "),
+            Span::styled("n", Style::default().fg(t.status_error)),
+            Span::raw("o  "),
+            Span::styled("Esc", Style::default().fg(t.help_key)),
+            Span::raw(" cancel"),
+        ]),
+    ];
+    f.render_widget(
+        Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(" Complete ").border_style(Style::default().fg(t.project_border))).style(t.popup_bg_style()),
+        popup,
+    );
+}
+
 // ============================================================================
 // Binary lookup
 // ============================================================================
@@ -987,6 +1159,13 @@ fn handle_events(app: &mut App) -> io::Result<ViewAction> {
     if let Some(path) = app.confirm_delete.take() {
         if matches!(key.code, KeyCode::Char('y') | KeyCode::Char('Y')) {
             return Ok(ViewAction::DeleteFile(path))
+        }
+        return Ok(ViewAction::None);
+    }
+
+    if let Some(path) = app.confirm_complete.take() {
+        if matches!(key.code, KeyCode::Char('y') | KeyCode::Char('Y')) {
+            return Ok(ViewAction::CompleteFile(path))
         }
         return Ok(ViewAction::None);
     }
@@ -1168,7 +1347,7 @@ fn main() -> io::Result<()> {
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout))?;
 
     while !app.quit {
-        terminal.draw(|f| render(&app, f)).map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{}", e)))?;
+        terminal.draw(|f| render(&mut app, f)).map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{}", e)))?;
         match handle_events(&mut app)? {
             ViewAction::OpenEditor(path) => { suspend_for_editor(&mut terminal, &path)?; app.reload() }
             ViewAction::OpenInTedtui(inbox) => { suspend_for_inbox_tedtui(&mut terminal, &inbox)?; app.reload() }
@@ -1176,6 +1355,39 @@ fn main() -> io::Result<()> {
             ViewAction::NewTodo => { suspend_for_new_todo(&mut terminal)?; app.reload() }
             ViewAction::DeleteFile(path) => {
                 let _ = fs::remove_file(&path);
+                app.reload();
+            }
+            ViewAction::MoveFile(src, target_dir) => {
+                let dest = target_dir.join(src.file_name().unwrap_or_default());
+                let _ = fs::create_dir_all(&target_dir);
+                if fs::copy(&src, &dest).is_ok() {
+                    let _ = fs::remove_file(&src);
+                }
+                app.reload();
+            }
+            ViewAction::CompleteFile(path) => {
+                if let Ok(content) = fs::read_to_string(&path) {
+                    let done_dir = Path::new(&std::env::var("HOME").unwrap_or_else(|_| ".".to_string())).join(".ted").join("done");
+                    let dest = done_dir.join(path.file_name().unwrap_or_default());
+                    let ts = chrono::Local::now().format("%m-%d-%Y_%H:%M:%S").to_string();
+                    let mut lines: Vec<String> = content.lines().map(|l| {
+                        if l.trim() == "completed: null" { format!("completed: {}", ts) }
+                        else if l.starts_with("- [ ] ") { format!("- [x] {}", &l[6..]) }
+                        else { l.to_string() }
+                    }).collect();
+                    let has_fm = lines.first().map(|l| l.trim() == "---").unwrap_or(false);
+                    let has_completed = lines.iter().any(|l| l.trim().starts_with("completed:"));
+                    if !has_completed {
+                        if has_fm {
+                            lines.insert(1, format!("completed: {}", ts));
+                        } else {
+                            lines = vec!["---".into(), format!("completed: {}", ts), "---".into()].into_iter().chain(lines).collect();
+                        }
+                    }
+                    let _ = fs::create_dir_all(&done_dir);
+                    let _ = fs::write(&dest, lines.join("\n"));
+                    let _ = fs::remove_file(&path);
+                }
                 app.reload();
             }
             ViewAction::RunBackground(cmd) => {
