@@ -614,13 +614,14 @@ impl App {
         self.show_overview = false;
         let prev_project = self.store.name_for(self.selected_project, self.show_empty_projects).to_string();
         let prev_todo = self.current_todos().get(self.selected_todo).map(|t| t.parsed.name.clone());
+        let prev_index = self.selected_todo;
         if let Ok(store) = TodoStore::load() { self.store = store }
         self.backlog_store = BacklogStore::load();
         self.plans = load_plans();
         self.inbox_files = load_inbox();
         self.resort();
         self.selected_project = self.store.entries(self.show_empty_projects).iter().position(|(n, _)| *n == prev_project).unwrap_or(0);
-        self.selected_todo = self.current_todos().iter().position(|t| Some(t.parsed.name.as_str()) == prev_todo.as_deref()).unwrap_or(0);
+        self.selected_todo = self.current_todos().iter().position(|t| Some(t.parsed.name.as_str()) == prev_todo.as_deref()).unwrap_or_else(|| prev_index.min(self.current_todos().len().saturating_sub(1)));
     }
 
     fn mode_items(&self, mode: PanelMode) -> usize {
@@ -1269,7 +1270,7 @@ fn suspend_for_tedtui(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>
     Ok(())
 }
 
-fn parse_inbox_content(content: &str, fallback_name: &str) -> (String, String) {
+fn parse_inbox_content(content: &str, fallback_name: &str) -> (String, String, String) {
     let mut name = String::new();
     let mut goal = String::new();
     let mut timestamp = String::new();
@@ -1300,11 +1301,8 @@ fn parse_inbox_content(content: &str, fallback_name: &str) -> (String, String) {
 
     if name.is_empty() { name = fallback_name.to_string() }
     goal = goal.trim().to_string();
-    if !timestamp.is_empty() {
-        if !goal.is_empty() { goal.push_str("\n\n"); }
-        goal.push_str(&format!("---\n*From inbox ({})*", timestamp));
-    }
-    (name, goal)
+    let info = if !timestamp.is_empty() { format!("From inbox ({})", timestamp) } else { String::new() };
+    (name, goal, info)
 }
 
 fn suspend_for_inbox_tedtui(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, inbox: &InboxFile) -> io::Result<()> {
@@ -1312,9 +1310,9 @@ fn suspend_for_inbox_tedtui(terminal: &mut Terminal<CrosstermBackend<std::io::St
     execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
     terminal.show_cursor()?;
 
-    let (name, goal) = parse_inbox_content(&inbox.content, &inbox.name);
+    let (name, goal, info) = parse_inbox_content(&inbox.content, &inbox.name);
 
-    let json = serde_json::json!({ "name": name, "goal": goal });
+    let json = serde_json::json!({ "name": name, "goal": goal, "info": info });
     let json_str = serde_json::to_string(&json).unwrap_or_else(|_| "{}".to_string());
 
     if let Some(tedtui) = find_tedtui() {
