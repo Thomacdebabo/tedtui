@@ -220,30 +220,22 @@ impl BacklogStore {
 // App state
 // ============================================================================
 
-#[derive(Clone, Copy, PartialEq)]
-enum PanelMode {
-    Projects,
-    Plans,
-    Inbox,
-    Backlog,
+type PanelIdx = usize;
+const PROJ: PanelIdx = 0;
+const PLANS: PanelIdx = 1;
+const INBOX: PanelIdx = 2;
+const BACKLOG: PanelIdx = 3;
+const PANEL_COUNT: PanelIdx = 4;
+const PANEL_NAMES: &[&str] = &["Projects", "Plans", "Inbox", "Backlog"];
+
+#[derive(Clone, Copy)]
+struct PanelState {
+    sidx: usize,
+    cidx: usize,
 }
 
-impl PanelMode {
-    const ALL: &'static [PanelMode] = &[PanelMode::Projects, PanelMode::Plans, PanelMode::Inbox, PanelMode::Backlog];
-
-    fn next(self) -> Self {
-        let idx = Self::ALL.iter().position(|m| *m == self).unwrap_or(0);
-        Self::ALL[(idx + 1) % Self::ALL.len()]
-    }
-
-    fn header(self) -> &'static str {
-        match self {
-            PanelMode::Projects => "Projects",
-            PanelMode::Plans => "Plans",
-            PanelMode::Inbox => "Inbox",
-            PanelMode::Backlog => "Backlog",
-        }
-    }
+impl PanelState {
+    fn new() -> Self { PanelState { sidx: 0, cidx: 0 } }
 }
 
 #[derive(Clone, PartialEq)]
@@ -293,7 +285,7 @@ enum ViewAction {
 
 fn help_keys(app: &App) -> Vec<(&'static str, &'static str)> {
     match app.panel_mode {
-        PanelMode::Projects => vec![
+        PROJ => vec![
             ("Enter", "Detail"),
             ("Ctrl+E", "Edit"),
             ("Ctrl+N", "New"),
@@ -303,20 +295,21 @@ fn help_keys(app: &App) -> Vec<(&'static str, &'static str)> {
             ("s", "Sort"),
             ("h", "Hide"),
         ],
-        PanelMode::Plans => vec![
+        PLANS => vec![
             ("Ctrl+E", "Edit"),
         ],
-        PanelMode::Inbox => vec![
+        INBOX => vec![
             ("Ctrl+E", "Open in tedtui"),
             ("d", "Delete"),
             ("u", "Run inbox"),
             ("o", "Obsidian"),
         ],
-        PanelMode::Backlog => vec![
+        BACKLOG => vec![
             ("Enter", "Detail"),
             ("Ctrl+E", "Edit"),
             ("Ctrl+B", "Todos"),
         ],
+        _ => vec![],
     }
 }
 
@@ -380,7 +373,7 @@ fn toggle_focus_action(app: &mut App) -> Option<ViewAction> {
 }
 
 fn cycle_panel_action(app: &mut App) -> Option<ViewAction> {
-    app.panel_mode = app.panel_mode.next();
+    app.panel_mode = (app.panel_mode + 1) % PANEL_COUNT;
     app.selected_left = app.header_position(app.panel_mode);
     None
 }
@@ -389,11 +382,9 @@ fn global_up_action(app: &mut App) -> Option<ViewAction> {
     if app.focus == Focus::Sidebar && app.selected_left > 0 {
         app.selected_left -= 1; app.select_left(app.selected_left);
     } else if app.focus == Focus::Content {
-        match app.panel_mode {
-            PanelMode::Projects | PanelMode::Backlog => { if app.selected_todo > 0 { app.selected_todo -= 1 } }
-            PanelMode::Plans => { app.plan_scroll = app.plan_scroll.saturating_sub(1) }
-            PanelMode::Inbox => { app.inbox_scroll = app.inbox_scroll.saturating_sub(1) }
-        }
+        let p = app.panel_mode;
+        if p == PLANS || p == INBOX { app.p().cidx = app.pi().cidx.saturating_sub(1) }
+        else if app.pi().cidx > 0 { app.p().cidx -= 1 }
     }
     None
 }
@@ -403,18 +394,16 @@ fn global_down_action(app: &mut App) -> Option<ViewAction> {
         let max = app.left_len();
         if app.selected_left + 1 < max { app.selected_left += 1; app.select_left(app.selected_left) }
     } else if app.focus == Focus::Content {
-        match app.panel_mode {
-            PanelMode::Projects | PanelMode::Backlog => { if app.selected_todo + 1 < app.current_todos().len() { app.selected_todo += 1 } }
-            PanelMode::Plans => { app.plan_scroll += 1 }
-            PanelMode::Inbox => { app.inbox_scroll += 1 }
-        }
+        let p = app.panel_mode;
+        if p == PLANS || p == INBOX { app.p().cidx += 1 }
+        else if app.pi().cidx + 1 < app.current_todos().len() { app.p().cidx += 1 }
     }
     None
 }
 
 fn global_enter_action(app: &mut App) -> Option<ViewAction> {
     if app.focus == Focus::Sidebar { app.select_left(app.selected_left); app.focus = Focus::Content }
-    else if matches!(app.panel_mode, PanelMode::Projects | PanelMode::Backlog) && !app.current_todos().is_empty() {
+    else if (app.panel_mode == PROJ || app.panel_mode == BACKLOG) && !app.current_todos().is_empty() {
         app.show_detail = true; app.detail_scroll = 0;
     }
     None
@@ -427,10 +416,11 @@ fn global_left_action(app: &mut App) -> Option<ViewAction> {
 
 fn global_edit_action(app: &mut App) -> Option<ViewAction> {
     match app.panel_mode {
-        PanelMode::Projects => app.current_todos().get(app.selected_todo).map(|t| ViewAction::EditInTedtui(t.path.clone())),
-        PanelMode::Plans => app.current_plan().map(|p| ViewAction::OpenEditor(p.path.clone())),
-        PanelMode::Inbox => app.current_inbox().map(|f| ViewAction::OpenInTedtui(f.clone())),
-        PanelMode::Backlog => app.current_todos().get(app.selected_todo).map(|t| ViewAction::EditInTedtui(t.path.clone())),
+        PROJ => app.current_todos().get(app.pi().cidx).map(|t| ViewAction::EditInTedtui(t.path.clone())),
+        PLANS => app.current_plan().map(|p| ViewAction::OpenEditor(p.path.clone())),
+        INBOX => app.current_inbox().map(|f| ViewAction::OpenInTedtui(f.clone())),
+        BACKLOG => app.current_todos().get(app.pi().cidx).map(|t| ViewAction::EditInTedtui(t.path.clone())),
+        _ => None,
     }
 }
 
@@ -439,8 +429,8 @@ fn global_new_todo_action(_app: &mut App) -> Option<ViewAction> {
 }
 
 fn complete_todo_action(app: &mut App) -> Option<ViewAction> {
-    if app.panel_mode != PanelMode::Projects || app.focus != Focus::Content { return None }
-    let todo = app.current_todos().get(app.selected_todo)?;
+    if app.panel_mode != PROJ || app.focus != Focus::Content { return None }
+    let todo = app.current_todos().get(app.pi().cidx)?;
     if todo.parsed.tasks.iter().all(|t| t.completed) {
         Some(ViewAction::CompleteFile(todo.path.clone()))
     } else {
@@ -451,10 +441,10 @@ fn complete_todo_action(app: &mut App) -> Option<ViewAction> {
 
 fn move_to_backlog_action(app: &mut App) -> Option<ViewAction> {
     if app.focus != Focus::Content { return None }
-    if !matches!(app.panel_mode, PanelMode::Projects | PanelMode::Backlog) { return None }
-    let todo = app.current_todos().get(app.selected_todo)?;
+    if app.panel_mode != PROJ && app.panel_mode != BACKLOG { return None }
+    let todo = app.current_todos().get(app.pi().cidx)?;
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    let is_backlog = app.panel_mode == PanelMode::Backlog;
+    let is_backlog = app.panel_mode == BACKLOG;
     let target_dir = Path::new(&home).join(".ted").join(if is_backlog { "todos" } else { "backlog" });
     Some(ViewAction::MoveFile(todo.path.clone(), target_dir))
 }
@@ -491,7 +481,7 @@ fn global_bindings() -> Vec<(KeyCode, KeyModifiers, ActionFn)> {
 
 fn panel_actions(app: &App) -> Vec<(KeyCode, ViewAction)> {
     match app.panel_mode {
-        PanelMode::Projects => vec![
+        PROJ => vec![
             (KeyCode::Char('o'), ViewAction::Action(overview_action)),
             (KeyCode::Char('O'), ViewAction::Action(overview_action)),
             (KeyCode::Char('s'), ViewAction::Action(sort_action)),
@@ -499,8 +489,8 @@ fn panel_actions(app: &App) -> Vec<(KeyCode, ViewAction)> {
             (KeyCode::Char('h'), ViewAction::Action(toggle_empty_action)),
             (KeyCode::Char('H'), ViewAction::Action(toggle_empty_action)),
         ],
-        PanelMode::Plans => vec![],
-        PanelMode::Inbox => vec![
+        PLANS => vec![],
+        INBOX => vec![
             (KeyCode::Char('d'), ViewAction::Action(inbox_delete_action)),
             (KeyCode::Char('D'), ViewAction::Action(inbox_delete_action)),
             (KeyCode::Char('u'), ViewAction::Action(inbox_update_action)),
@@ -508,7 +498,8 @@ fn panel_actions(app: &App) -> Vec<(KeyCode, ViewAction)> {
             (KeyCode::Char('o'), ViewAction::Action(inbox_obsidian_action)),
             (KeyCode::Char('O'), ViewAction::Action(inbox_obsidian_action)),
         ],
-        PanelMode::Backlog => vec![],
+        BACKLOG => vec![],
+        _ => vec![],
     }
 }
 
@@ -521,15 +512,10 @@ struct App {
     backlog_store: BacklogStore,
     plans: Vec<PlanFile>,
     inbox_files: Vec<InboxFile>,
-    panel_mode: PanelMode,
+    panels: [PanelState; PANEL_COUNT],
+    panel_mode: PanelIdx,
     focus: Focus,
     selected_left: usize,
-    selected_project: usize,
-    selected_todo: usize,
-    selected_plan: usize,
-    selected_inbox: usize,
-    plan_scroll: usize,
-    inbox_scroll: usize,
     confirm_delete: Option<PathBuf>,
     confirm_complete: Option<PathBuf>,
     show_detail: bool,
@@ -551,15 +537,10 @@ impl App {
             backlog_store: BacklogStore::load(),
             plans: load_plans(),
             inbox_files: load_inbox(),
-            panel_mode: PanelMode::Projects,
+            panels: [PanelState::new(); PANEL_COUNT],
+            panel_mode: PROJ,
             focus: Focus::Sidebar,
             selected_left: 0,
-            selected_project: 0,
-            selected_todo: 0,
-            selected_plan: 0,
-            selected_inbox: 0,
-            plan_scroll: 0,
-            inbox_scroll: 0,
             confirm_delete: None,
             confirm_complete: None,
             show_detail: false,
@@ -575,20 +556,25 @@ impl App {
         })
     }
 
+    fn p(&mut self) -> &mut PanelState { &mut self.panels[self.panel_mode] }
+    fn pi(&self) -> &PanelState { &self.panels[self.panel_mode] }
+
     fn current_todos(&self) -> &[TodoFile] {
-        match self.panel_mode {
-            PanelMode::Backlog => self.backlog_store.todos_for(self.selected_project),
-            _ => self.store.todos_for(self.selected_project, self.show_empty_projects),
+        if self.panel_mode == BACKLOG {
+            self.backlog_store.todos_for(self.panels[BACKLOG].sidx)
+        } else {
+            self.store.todos_for(self.panels[PROJ].sidx, self.show_empty_projects)
         }
     }
     fn current_name(&self) -> &str {
-        match self.panel_mode {
-            PanelMode::Backlog => self.backlog_store.name_for(self.selected_project),
-            _ => self.store.name_for(self.selected_project, self.show_empty_projects),
+        if self.panel_mode == BACKLOG {
+            self.backlog_store.name_for(self.panels[BACKLOG].sidx)
+        } else {
+            self.store.name_for(self.panels[PROJ].sidx, self.show_empty_projects)
         }
     }
-    fn current_plan(&self) -> Option<&PlanFile> { self.plans.get(self.selected_plan) }
-    fn current_inbox(&self) -> Option<&InboxFile> { self.inbox_files.get(self.selected_inbox) }
+    fn current_plan(&self) -> Option<&PlanFile> { self.plans.get(self.panels[PLANS].sidx) }
+    fn current_inbox(&self) -> Option<&InboxFile> { self.inbox_files.get(self.panels[INBOX].sidx) }
 
     fn search_matches(&self, text: &str) -> bool {
         if !self.search_active || self.search_query.is_empty() { return true }
@@ -611,55 +597,56 @@ impl App {
             SortMode::LeastTodos => { self.store.groups.sort_by(|a, b| a.todos.len().cmp(&b.todos.len())); }
         }
         let visible = self.store.visible_groups(self.show_empty_projects).len();
-        if self.selected_project > visible { self.selected_project = visible }
+        if self.panels[PROJ].sidx > visible { self.panels[PROJ].sidx = visible }
     }
 
     fn reload(&mut self) {
         self.show_detail = false;
         self.show_overview = false;
-        let prev_project = self.store.name_for(self.selected_project, self.show_empty_projects).to_string();
-        let prev_todo = self.current_todos().get(self.selected_todo).map(|t| t.parsed.name.clone());
-        let prev_index = self.selected_todo;
+        let prev_project = self.store.name_for(self.panels[PROJ].sidx, self.show_empty_projects).to_string();
+        let cidx = self.pi().cidx;
+        let prev_todo = self.current_todos().get(cidx).map(|t| t.parsed.name.clone());
         if let Ok(store) = TodoStore::load() { self.store = store }
         self.backlog_store = BacklogStore::load();
         self.plans = load_plans();
         self.inbox_files = load_inbox();
         self.resort();
-        self.selected_project = self.store.entries(self.show_empty_projects).iter().position(|(n, _)| *n == prev_project).unwrap_or(0);
-        self.selected_todo = self.current_todos().iter().position(|t| Some(t.parsed.name.as_str()) == prev_todo.as_deref()).unwrap_or_else(|| prev_index.min(self.current_todos().len().saturating_sub(1)));
+        self.panels[PROJ].sidx = self.store.entries(self.show_empty_projects).iter().position(|(n, _)| *n == prev_project).unwrap_or(0);
+        self.p().cidx = self.current_todos().iter().position(|t| Some(t.parsed.name.as_str()) == prev_todo.as_deref()).unwrap_or_else(|| cidx.min(self.current_todos().len().saturating_sub(1)));
     }
 
-    fn mode_items(&self, mode: PanelMode) -> usize {
+    fn mode_items(&self, mode: PanelIdx) -> usize {
         match mode {
-            PanelMode::Projects => self.store.entries(self.show_empty_projects).len(),
-            PanelMode::Plans => self.plans.len(),
-            PanelMode::Inbox => self.inbox_files.len(),
-            PanelMode::Backlog => self.backlog_store.entries().len(),
+            PROJ => self.store.entries(self.show_empty_projects).len(),
+            PLANS => self.plans.len(),
+            INBOX => self.inbox_files.len(),
+            BACKLOG => self.backlog_store.entries().len(),
+            _ => 0,
         }
     }
 
     fn left_len(&self) -> usize {
         let mut n = 0;
-        for mode in PanelMode::ALL { n += 1; if *mode == self.panel_mode { n += self.mode_items(*mode) } }
+        for m in 0..PANEL_COUNT { n += 1; if m == self.panel_mode { n += self.mode_items(m) } }
         n
     }
 
-    fn is_header(&self, idx: usize) -> Option<PanelMode> {
+    fn is_header(&self, idx: usize) -> Option<PanelIdx> {
         let mut i = 0;
-        for mode in PanelMode::ALL {
-            if idx == i { return Some(*mode) }
+        for m in 0..PANEL_COUNT {
+            if idx == i { return Some(m) }
             i += 1;
-            if *mode == self.panel_mode { i += self.mode_items(*mode) }
+            if m == self.panel_mode { i += self.mode_items(m) }
         }
         None
     }
 
     fn sub_index(&self, idx: usize) -> Option<usize> {
         let mut i = 0;
-        for mode in PanelMode::ALL {
+        for m in 0..PANEL_COUNT {
             i += 1;
-            if *mode == self.panel_mode {
-                let count = self.mode_items(*mode);
+            if m == self.panel_mode {
+                let count = self.mode_items(m);
                 if idx >= i && idx < i + count { return Some(idx - i) }
                 i += count;
             }
@@ -667,39 +654,36 @@ impl App {
         None
     }
 
-    fn header_position(&self, mode: PanelMode) -> usize {
+    fn header_position(&self, mode: PanelIdx) -> usize {
         let mut idx = 0;
-        for m in PanelMode::ALL {
-            if *m == mode { return idx }
+        for m in 0..PANEL_COUNT {
+            if m == mode { return idx }
             idx += 1;
-            if *m == self.panel_mode { idx += self.mode_items(*m) }
+            if m == self.panel_mode { idx += self.mode_items(m) }
         }
         0
     }
 
     fn select_left(&mut self, idx: usize) {
         if idx >= self.left_len() { return }
-        if let Some(mode) = self.is_header(idx) {
-            self.panel_mode = mode;
-            self.selected_left = self.header_position(mode);
+        if let Some(m) = self.is_header(idx) {
+            self.panel_mode = m;
+            self.selected_left = self.header_position(m);
             return;
         }
         if let Some(sub) = self.sub_index(idx) {
-            match self.panel_mode {
-                PanelMode::Projects => { self.selected_project = sub; self.selected_todo = 0; }
-                PanelMode::Plans => { self.selected_plan = sub; self.plan_scroll = 0; }
-                PanelMode::Inbox => { self.selected_inbox = sub; self.inbox_scroll = 0; }
-                PanelMode::Backlog => { self.selected_project = sub; self.selected_todo = 0; }
-            }
+            self.p().sidx = sub;
+            self.p().cidx = 0;
         }
     }
 
-    fn mode_sub_labels(&self, mode: PanelMode) -> Vec<String> {
+    fn mode_sub_labels(&self, mode: PanelIdx) -> Vec<String> {
         match mode {
-            PanelMode::Projects => self.store.entries(self.show_empty_projects).iter().map(|(n, c)| format!("{} ({})", n, c)).collect(),
-            PanelMode::Plans => self.plans.iter().filter(|p| self.search_matches(&p.name) || self.search_matches(&p.content)).map(|p| p.name.clone()).collect(),
-            PanelMode::Inbox => self.inbox_files.iter().filter(|f| self.search_matches(&f.name) || self.search_matches(&f.content)).map(|f| f.name.clone()).collect(),
-            PanelMode::Backlog => self.backlog_store.entries().iter().map(|(n, c)| format!("{} ({})", n, c)).collect(),
+            PROJ => self.store.entries(self.show_empty_projects).iter().map(|(n, c)| format!("{} ({})", n, c)).collect(),
+            PLANS => self.plans.iter().filter(|p| self.search_matches(&p.name) || self.search_matches(&p.content)).map(|p| p.name.clone()).collect(),
+            INBOX => self.inbox_files.iter().filter(|f| self.search_matches(&f.name) || self.search_matches(&f.content)).map(|f| f.name.clone()).collect(),
+            BACKLOG => self.backlog_store.entries().iter().map(|(n, c)| format!("{} ({})", n, c)).collect(),
+            _ => vec![],
         }
     }
 }
@@ -802,13 +786,13 @@ fn left_items(app: &App) -> Vec<(String, bool)> {
     let sel = app.selected_left;
     let mut idx = 0usize;
 
-    for mode in PanelMode::ALL {
-        let expanded = *mode == app.panel_mode;
+    for m in 0..PANEL_COUNT {
+        let expanded = m == app.panel_mode;
         let arrow = if expanded { "\u{25bc}" } else { "\u{25b6}" };
-        items.push((format!("{} {}", arrow, mode.header()), idx == sel && focused));
+        items.push((format!("{} {}", arrow, PANEL_NAMES[m]), idx == sel && focused));
         idx += 1;
         if expanded {
-            for sub in app.mode_sub_labels(*mode) {
+            for sub in app.mode_sub_labels(m) {
                 items.push((format!("    {}", sub), idx == sel && focused));
                 idx += 1;
             }
@@ -824,7 +808,7 @@ fn render_left_panel(app: &App, f: &mut Frame, area: Rect) {
     let all_items = left_items(app);
     let list_items: Vec<ListItem> = all_items.iter().map(|(text, is_sel)| {
         let is_header = text.starts_with('\u{25b6}') || text.starts_with('\u{25bc}');
-        let is_active_header = is_header && text.chars().skip(1).collect::<String>().trim() == app.panel_mode.header();
+        let is_active_header = is_header && text.chars().skip(1).collect::<String>().trim() == PANEL_NAMES[app.panel_mode];
         let style = if *is_sel {
             app.theme.selected_style()
         } else if is_active_header {
@@ -842,18 +826,20 @@ fn render_left_panel(app: &App, f: &mut Frame, area: Rect) {
 
 fn render_right_panel(app: &mut App, f: &mut Frame, area: Rect) {
     match app.panel_mode {
-        PanelMode::Projects => render_todos_content(app, f, area),
-        PanelMode::Plans => render_file_content(app, f, area, " Plan ", app.current_plan().map(|p| (p.name.as_str(), p.content.as_str())), app.plan_scroll),
-        PanelMode::Inbox => render_file_content(app, f, area, " Inbox ", app.current_inbox().map(|i| (i.name.as_str(), i.content.as_str())), app.inbox_scroll),
-        PanelMode::Backlog => render_todos_content(app, f, area),
+        PROJ => render_todos_content(app, f, area),
+        PLANS => render_file_content(app, f, area, " Plan ", app.current_plan().map(|p| (p.name.as_str(), p.content.as_str())), app.panels[PLANS].cidx),
+        INBOX => render_file_content(app, f, area, " Inbox ", app.current_inbox().map(|i| (i.name.as_str(), i.content.as_str())), app.panels[INBOX].cidx),
+        BACKLOG => render_todos_content(app, f, area),
+        _ => {}
     }
 }
 
 fn render_todos_content(app: &mut App, f: &mut Frame, area: Rect) {
-    let todos_all = app.current_todos();
+    let cidx = app.pi().cidx;
+    let total = app.current_todos();
     let name = app.current_name().to_string();
     let todos: Vec<&TodoFile> = if app.search_active && !app.search_query.is_empty() {
-        todos_all.iter().filter(|t| {
+        total.iter().filter(|t| {
             app.search_matches(&t.parsed.name)
             || app.search_matches(&t.parsed.project_id)
             || app.search_matches(&t.parsed.info)
@@ -863,20 +849,19 @@ fn render_todos_content(app: &mut App, f: &mut Frame, area: Rect) {
             || app.search_matches(&t.parsed.history)
         }).collect()
     } else {
-        todos_all.iter().collect()
+        total.iter().collect()
     };
-    let title = format!(" {} ({}/{}) ", name, todos.len(), todos_all.len());
+    let title = format!(" {} ({}/{}) ", name, todos.len(), total.len());
     let right_active = app.focus == Focus::Content;
-    let block = || Block::default().borders(Borders::ALL).title(title.as_str()).border_style(if right_active { app.theme.active_border_style() } else { app.theme.inactive_border_style() });
+    let border_st = if right_active { app.theme.active_border_style() } else { app.theme.inactive_border_style() };
 
-    if todos.is_empty() { f.render_widget(Paragraph::new(" No todos yet ").block(block()), area); return }
+    if todos.is_empty() { f.render_widget(Paragraph::new(" No todos yet ").block(Block::default().borders(Borders::ALL).title(title.as_str()).border_style(border_st)), area); return }
 
-    let show_tag = app.selected_project == 0;
+    let show_tag = app.pi().sidx == 0;
     let items: Vec<ListItem> = todos.iter().enumerate().map(|(i, todo)| {
         let ch = todo.status_indicator();
         let check = if ch == "\u{2713}" { "\u{2713} " } else { "  " };
         let suffix = todo.completion_summary().map(|s| format!(" [{}]", s)).unwrap_or_default();
-        let highlight = right_active && i == app.selected_todo;
         let line = if show_tag {
             let tag = todo.project_tag.as_deref().unwrap_or("?");
             let tag_padded = if tag.len() > 10 { let truncated: String = tag.chars().take(7).collect(); format!("{}...", truncated) } else { format!("{:<10}", tag) };
@@ -884,12 +869,14 @@ fn render_todos_content(app: &mut App, f: &mut Frame, area: Rect) {
         } else {
             Line::from(format!(" {}{}{}", check, todo.parsed.name, suffix))
         };
-        let style = if highlight { app.theme.selected_style() } else if todo.is_complete() { Style::default().fg(app.theme.task_completed) } else { Style::default() };
+        let highlighted = right_active && i == cidx;
+        let style = if highlighted { app.theme.selected_style() } else if todo.is_complete() { Style::default().fg(app.theme.task_completed) } else { Style::default() };
         ListItem::new(line).style(style)
     }).collect();
-    if app.selected_todo >= todos.len() { app.selected_todo = todos.len().saturating_sub(1) }
-    app.todo_list_state.select(Some(app.selected_todo));
-    f.render_stateful_widget(TuiList::new(items).block(block()), area, &mut app.todo_list_state);
+    let cidx = if cidx >= todos.len() { todos.len().saturating_sub(1) } else { cidx };
+    app.p().cidx = cidx;
+    app.todo_list_state.select(Some(cidx));
+    f.render_stateful_widget(TuiList::new(items).block(Block::default().borders(Borders::ALL).title(title.as_str()).border_style(border_st)), area, &mut app.todo_list_state);
 }
 
 fn highlight_matches(line: &str, query: &str, base_style: Style, hl_style: Style) -> Line<'static> {
@@ -980,7 +967,7 @@ fn render_search_bar(app: &App, f: &mut Frame, area: Rect) {
 fn render_detail(app: &App, f: &mut Frame, area: Rect) {
     let todos = app.current_todos();
     if todos.is_empty() { return }
-    let todo = &todos[app.selected_todo];
+    let todo = &todos[app.pi().cidx];
 
     let popup = centered_rect(area, area.width.saturating_sub(8).min(100), area.height.saturating_sub(4).min(40));
     f.render_widget(Clear, popup);
@@ -1211,8 +1198,8 @@ fn handle_detail_key(app: &mut App, code: KeyCode) {
 fn toggle_empty(app: &mut App) {
     app.show_empty_projects = !app.show_empty_projects;
     let visible = app.store.visible_groups(app.show_empty_projects).len();
-    if app.selected_project > visible { app.selected_project = visible }
-    app.selected_todo = 0;
+    if app.panels[PROJ].sidx > visible { app.panels[PROJ].sidx = visible }
+    app.panels[PROJ].cidx = 0;
 }
 
 // ============================================================================
