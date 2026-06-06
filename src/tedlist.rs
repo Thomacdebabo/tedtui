@@ -286,6 +286,7 @@ enum ViewAction {
     DeleteFile(PathBuf),
     CompleteFile(PathBuf),
     RunBackground(String),
+    RunObsidian(String),
     MoveFile(PathBuf, PathBuf),
     Action(ActionFn),
 }
@@ -362,8 +363,8 @@ fn inbox_obsidian_action(app: &mut App) -> Option<ViewAction> {
         .replace('$', "\\$")
         .replace('`', "\\`");
 
-    Some(ViewAction::RunBackground(format!(
-        "obsidian create name=\"{}\" content=\"{}\" open", name, escaped
+    Some(ViewAction::RunObsidian(format!(
+        "obsidian vault=\"TomtomsVault\" create name=\"{}\" content=\"{}\" path=\"Zettelkasten/\" open", name, escaped
     )))
 }
 
@@ -1392,6 +1393,10 @@ fn main() -> io::Result<()> {
                 let _ = Command::new("sh").arg("-c").arg(&cmd).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status();
                 app.reload();
             }
+            ViewAction::RunObsidian(cmd) => {
+                suspend_for_obsidian(&mut terminal, &cmd)?;
+                app.reload();
+            }
             ViewAction::None | ViewAction::Action(_) => {}
         }
     }
@@ -1399,5 +1404,17 @@ fn main() -> io::Result<()> {
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
     terminal.show_cursor()?;
+    Ok(())
+}
+
+fn suspend_for_obsidian(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, cmd: &str) -> io::Result<()> {
+    disable_raw_mode()?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
+    terminal.show_cursor()?;
+    let status = Command::new("sh").arg("-c").arg(cmd).stdin(Stdio::inherit()).stdout(Stdio::inherit()).stderr(Stdio::inherit()).status()?;
+    if !status.success() { eprintln!("obsidian exited with: {}", status) }
+    enable_raw_mode()?;
+    execute!(terminal.backend_mut(), EnterAlternateScreen, EnableMouseCapture)?;
+    terminal.clear()?;
     Ok(())
 }
