@@ -472,6 +472,7 @@ fn global_bindings() -> Vec<(KeyCode, KeyModifiers, ActionFn)> {
         (KeyCode::Char('d'), KeyModifiers::CONTROL, complete_todo_action),
         (KeyCode::Char('b'), KeyModifiers::CONTROL, move_to_backlog_action),
         (KeyCode::Char('/'), KeyModifiers::NONE, search_action),
+        (KeyCode::Char('f'), KeyModifiers::CONTROL, search_action),
     ]
 }
 
@@ -559,22 +560,53 @@ impl App {
     fn p(&mut self) -> &mut PanelState { &mut self.panels[self.panel_mode] }
     fn pi(&self) -> &PanelState { &self.panels[self.panel_mode] }
 
+    fn real_sidx(&self, mode: PanelIdx) -> usize {
+        if !self.searching_sidebar() || mode != self.panel_mode { return self.panels[mode].sidx }
+        match mode {
+            PROJ => {
+                let entries = self.store.entries(self.show_empty_projects);
+                let filtered: Vec<usize> = entries.iter().enumerate()
+                    .filter(|(_, (n, _))| self.search_matches(n)).map(|(i, _)| i).collect();
+                filtered.get(self.panels[PROJ].sidx).copied().unwrap_or(0)
+            },
+            PLANS => {
+                let filtered: Vec<usize> = self.plans.iter().enumerate()
+                    .filter(|(_, p)| self.search_matches(&p.name) || self.search_matches(&p.content))
+                    .map(|(i, _)| i).collect();
+                filtered.get(self.panels[PLANS].sidx).copied().unwrap_or(0)
+            },
+            INBOX => {
+                let filtered: Vec<usize> = self.inbox_files.iter().enumerate()
+                    .filter(|(_, f)| self.search_matches(&f.name) || self.search_matches(&f.content))
+                    .map(|(i, _)| i).collect();
+                filtered.get(self.panels[INBOX].sidx).copied().unwrap_or(0)
+            },
+            BACKLOG => {
+                let entries = self.backlog_store.entries();
+                let filtered: Vec<usize> = entries.iter().enumerate()
+                    .filter(|(_, (n, _))| self.search_matches(n)).map(|(i, _)| i).collect();
+                filtered.get(self.panels[BACKLOG].sidx).copied().unwrap_or(0)
+            },
+            _ => self.panels[mode].sidx,
+        }
+    }
+
     fn current_todos(&self) -> &[TodoFile] {
         if self.panel_mode == BACKLOG {
-            self.backlog_store.todos_for(self.panels[BACKLOG].sidx)
+            self.backlog_store.todos_for(self.real_sidx(BACKLOG))
         } else {
-            self.store.todos_for(self.panels[PROJ].sidx, self.show_empty_projects)
+            self.store.todos_for(self.real_sidx(PROJ), self.show_empty_projects)
         }
     }
     fn current_name(&self) -> &str {
         if self.panel_mode == BACKLOG {
-            self.backlog_store.name_for(self.panels[BACKLOG].sidx)
+            self.backlog_store.name_for(self.real_sidx(BACKLOG))
         } else {
-            self.store.name_for(self.panels[PROJ].sidx, self.show_empty_projects)
+            self.store.name_for(self.real_sidx(PROJ), self.show_empty_projects)
         }
     }
-    fn current_plan(&self) -> Option<&PlanFile> { self.plans.get(self.panels[PLANS].sidx) }
-    fn current_inbox(&self) -> Option<&InboxFile> { self.inbox_files.get(self.panels[INBOX].sidx) }
+    fn current_plan(&self) -> Option<&PlanFile> { self.plans.get(self.real_sidx(PLANS)) }
+    fn current_inbox(&self) -> Option<&InboxFile> { self.inbox_files.get(self.real_sidx(INBOX)) }
 
     fn search_matches(&self, text: &str) -> bool {
         if !self.search_active || self.search_query.is_empty() { return true }
@@ -615,12 +647,36 @@ impl App {
         self.p().cidx = self.current_todos().iter().position(|t| Some(t.parsed.name.as_str()) == prev_todo.as_deref()).unwrap_or_else(|| cidx.min(self.current_todos().len().saturating_sub(1)));
     }
 
+    fn searching_sidebar(&self) -> bool {
+        self.focus == Focus::Sidebar && self.search_active && !self.search_query.is_empty()
+    }
+    fn searching_content(&self) -> bool {
+        self.focus == Focus::Content && self.search_active && !self.search_query.is_empty()
+    }
+
     fn mode_items(&self, mode: PanelIdx) -> usize {
+        let sidebar_searching = self.searching_sidebar() && mode == self.panel_mode;
         match mode {
-            PROJ => self.store.entries(self.show_empty_projects).len(),
-            PLANS => self.plans.len(),
-            INBOX => self.inbox_files.len(),
-            BACKLOG => self.backlog_store.entries().len(),
+            PROJ => {
+                let all = self.store.entries(self.show_empty_projects);
+                if sidebar_searching { all.iter().filter(|(n, _)| self.search_matches(n)).count() }
+                else { all.len() }
+            },
+            PLANS => {
+                if sidebar_searching {
+                    self.plans.iter().filter(|p| self.search_matches(&p.name) || self.search_matches(&p.content)).count()
+                } else { self.plans.len() }
+            },
+            INBOX => {
+                if sidebar_searching {
+                    self.inbox_files.iter().filter(|f| self.search_matches(&f.name) || self.search_matches(&f.content)).count()
+                } else { self.inbox_files.len() }
+            },
+            BACKLOG => {
+                let all = self.backlog_store.entries();
+                if sidebar_searching { all.iter().filter(|(n, _)| self.search_matches(n)).count() }
+                else { all.len() }
+            },
             _ => 0,
         }
     }
@@ -678,11 +734,20 @@ impl App {
     }
 
     fn mode_sub_labels(&self, mode: PanelIdx) -> Vec<String> {
+        let sidebar_searching = self.searching_sidebar() && mode == self.panel_mode;
         match mode {
-            PROJ => self.store.entries(self.show_empty_projects).iter().map(|(n, c)| format!("{} ({})", n, c)).collect(),
-            PLANS => self.plans.iter().filter(|p| self.search_matches(&p.name) || self.search_matches(&p.content)).map(|p| p.name.clone()).collect(),
-            INBOX => self.inbox_files.iter().filter(|f| self.search_matches(&f.name) || self.search_matches(&f.content)).map(|f| f.name.clone()).collect(),
-            BACKLOG => self.backlog_store.entries().iter().map(|(n, c)| format!("{} ({})", n, c)).collect(),
+            PROJ => self.store.entries(self.show_empty_projects).iter()
+                .filter(|(n, _)| !sidebar_searching || self.search_matches(n))
+                .map(|(n, c)| format!("{} ({})", n, c)).collect(),
+            PLANS => self.plans.iter()
+                .filter(|p| !sidebar_searching || self.search_matches(&p.name) || self.search_matches(&p.content))
+                .map(|p| p.name.clone()).collect(),
+            INBOX => self.inbox_files.iter()
+                .filter(|f| !sidebar_searching || self.search_matches(&f.name) || self.search_matches(&f.content))
+                .map(|f| f.name.clone()).collect(),
+            BACKLOG => self.backlog_store.entries().iter()
+                .filter(|(n, _)| !sidebar_searching || self.search_matches(n))
+                .map(|(n, c)| format!("{} ({})", n, c)).collect(),
             _ => vec![],
         }
     }
@@ -838,7 +903,7 @@ fn render_todos_content(app: &mut App, f: &mut Frame, area: Rect) {
     let cidx = app.pi().cidx;
     let total = app.current_todos();
     let name = app.current_name().to_string();
-    let todos: Vec<&TodoFile> = if app.search_active && !app.search_query.is_empty() {
+    let todos: Vec<&TodoFile> = if app.searching_content() {
         total.iter().filter(|t| {
             app.search_matches(&t.parsed.name)
             || app.search_matches(&t.parsed.project_id)
@@ -935,7 +1000,7 @@ fn render_help(app: &App, f: &mut Frame, area: Rect) {
         k("p"), Span::raw(" Mod  "),
         k("\u{2191}\u{2193}"), Span::raw(" Nav  "),
         k("Ctrl+B"), Span::raw(" Mv  "),
-        k("/"), Span::raw(" Sch  "),
+        k("Ctrl+F"), Span::raw(" Sch  "),
     ];
     for (key, desc) in help_keys(app) {
         spans.push(k(key));
@@ -1154,13 +1219,16 @@ fn handle_events(app: &mut App) -> io::Result<ViewAction> {
 
     if app.search_active {
         match key.code {
-            KeyCode::Esc => { app.search_active = false; app.search_query.clear(); }
-            KeyCode::Enter => { app.search_active = false; }
+            KeyCode::Esc => { app.search_active = false; app.search_query.clear(); return Ok(ViewAction::None) }
             KeyCode::Backspace => { app.search_query.pop(); }
-            KeyCode::Char(c) => { app.search_query.push(c); }
+            KeyCode::Char(c) if key.modifiers == KeyModifiers::NONE => { app.search_query.push(c); }
             _ => {}
         }
-        return Ok(ViewAction::None);
+        if app.searching_sidebar() {
+            let count = app.mode_items(app.panel_mode);
+            if app.p().sidx >= count { app.p().sidx = count.saturating_sub(1) }
+        }
+        // still searching — fall through to normal bindings for navigation/actions
     }
 
     for (kc, km, action) in global_bindings() {
@@ -1173,14 +1241,18 @@ fn handle_events(app: &mut App) -> io::Result<ViewAction> {
     }
 
     for (kc, action) in panel_actions(app) {
-        if key.code == kc {
-            if let ViewAction::Action(f) = action {
-                if let Some(result) = f(app) {
-                    return Ok(result);
-                }
-            }
-            break;
+        
+        if key.code != kc {
+            continue;
         }
+
+        if let ViewAction::Action(f) = action {
+            if let Some(result) = f(app) {
+                return Ok(result);
+            }
+        }
+        break;
+        
     }
 
     Ok(ViewAction::None)
