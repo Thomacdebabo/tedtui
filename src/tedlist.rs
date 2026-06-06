@@ -314,7 +314,7 @@ fn help_keys(app: &App) -> Vec<(&'static str, &'static str)> {
 }
 
 fn overview_action(app: &mut App) -> Option<ViewAction> {
-    if !app.current_todos().is_empty() { app.show_overview = true }
+    if app.filtered_content_len() > 0 { app.show_overview = true }
     None
 }
 
@@ -396,14 +396,14 @@ fn global_down_action(app: &mut App) -> Option<ViewAction> {
     } else if app.focus == Focus::Content {
         let p = app.panel_mode;
         if p == PLANS || p == INBOX { app.p().cidx += 1 }
-        else if app.pi().cidx + 1 < app.current_todos().len() { app.p().cidx += 1 }
+        else if app.pi().cidx + 1 < app.filtered_content_len() { app.p().cidx += 1 }
     }
     None
 }
 
 fn global_enter_action(app: &mut App) -> Option<ViewAction> {
     if app.focus == Focus::Sidebar { app.select_left(app.selected_left); app.focus = Focus::Content }
-    else if (app.panel_mode == PROJ || app.panel_mode == BACKLOG) && !app.current_todos().is_empty() {
+    else if (app.panel_mode == PROJ || app.panel_mode == BACKLOG) && app.filtered_content_len() > 0 {
         app.show_detail = true; app.detail_scroll = 0;
     }
     None
@@ -416,10 +416,10 @@ fn global_left_action(app: &mut App) -> Option<ViewAction> {
 
 fn global_edit_action(app: &mut App) -> Option<ViewAction> {
     match app.panel_mode {
-        PROJ => app.current_todos().get(app.pi().cidx).map(|t| ViewAction::EditInTedtui(t.path.clone())),
+        PROJ => app.current_todos().get(app.real_content_idx()).map(|t| ViewAction::EditInTedtui(t.path.clone())),
         PLANS => app.current_plan().map(|p| ViewAction::OpenEditor(p.path.clone())),
         INBOX => app.current_inbox().map(|f| ViewAction::OpenInTedtui(f.clone())),
-        BACKLOG => app.current_todos().get(app.pi().cidx).map(|t| ViewAction::EditInTedtui(t.path.clone())),
+        BACKLOG => app.current_todos().get(app.real_content_idx()).map(|t| ViewAction::EditInTedtui(t.path.clone())),
         _ => None,
     }
 }
@@ -430,7 +430,7 @@ fn global_new_todo_action(_app: &mut App) -> Option<ViewAction> {
 
 fn complete_todo_action(app: &mut App) -> Option<ViewAction> {
     if app.panel_mode != PROJ || app.focus != Focus::Content { return None }
-    let todo = app.current_todos().get(app.pi().cidx)?;
+    let todo = app.current_todos().get(app.real_content_idx())?;
     if todo.parsed.tasks.iter().all(|t| t.completed) {
         Some(ViewAction::CompleteFile(todo.path.clone()))
     } else {
@@ -442,7 +442,7 @@ fn complete_todo_action(app: &mut App) -> Option<ViewAction> {
 fn move_to_backlog_action(app: &mut App) -> Option<ViewAction> {
     if app.focus != Focus::Content { return None }
     if app.panel_mode != PROJ && app.panel_mode != BACKLOG { return None }
-    let todo = app.current_todos().get(app.pi().cidx)?;
+    let todo = app.current_todos().get(app.real_content_idx())?;
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
     let is_backlog = app.panel_mode == BACKLOG;
     let target_dir = Path::new(&home).join(".ted").join(if is_backlog { "todos" } else { "backlog" });
@@ -451,6 +451,7 @@ fn move_to_backlog_action(app: &mut App) -> Option<ViewAction> {
 
 fn search_action(app: &mut App) -> Option<ViewAction> {
     app.search_active = true;
+    app.search_typing = true;
     None
 }
 
@@ -527,6 +528,7 @@ struct App {
     todo_list_state: ListState,
     search_query: String,
     search_active: bool,
+    search_typing: bool,
     theme: Theme,
     quit: bool,
 }
@@ -552,6 +554,7 @@ impl App {
             todo_list_state: ListState::default(),
             search_query: String::new(),
             search_active: false,
+            search_typing: false,
             theme: Theme::load(),
             quit: false,
         })
@@ -622,6 +625,34 @@ impl App {
         false
     }
 
+    fn todo_matches_search(&self, t: &TodoFile) -> bool {
+        let q = &self.search_query;
+        !self.searching_content() || q.is_empty()
+        || self.search_matches(&t.parsed.name)
+        || self.search_matches(&t.parsed.project_id)
+        || self.search_matches(&t.parsed.info)
+        || self.search_matches(&t.parsed.goal)
+        || t.parsed.tasks.iter().any(|task| self.search_matches(&task.text))
+        || self.search_matches(&t.parsed.note)
+        || self.search_matches(&t.parsed.history)
+    }
+
+    fn real_content_idx(&self) -> usize {
+        let cidx = self.pi().cidx;
+        if !self.searching_content() { return cidx }
+        self.current_todos().iter()
+            .enumerate()
+            .filter(|(_, t)| self.todo_matches_search(t))
+            .nth(cidx)
+            .map(|(i, _)| i)
+            .unwrap_or(0)
+    }
+
+    fn filtered_content_len(&self) -> usize {
+        if !self.searching_content() { return self.current_todos().len() }
+        self.current_todos().iter().filter(|t| self.todo_matches_search(t)).count()
+    }
+
     fn resort(&mut self) {
         match self.sort_mode {
             SortMode::Alpha => sort_groups_alpha(&mut self.store.groups),
@@ -637,7 +668,7 @@ impl App {
         self.show_overview = false;
         let prev_project = self.store.name_for(self.panels[PROJ].sidx, self.show_empty_projects).to_string();
         let cidx = self.pi().cidx;
-        let prev_todo = self.current_todos().get(cidx).map(|t| t.parsed.name.clone());
+        let prev_todo = self.current_todos().get(self.real_content_idx()).map(|t| t.parsed.name.clone());
         if let Ok(store) = TodoStore::load() { self.store = store }
         self.backlog_store = BacklogStore::load();
         self.plans = load_plans();
@@ -904,15 +935,7 @@ fn render_todos_content(app: &mut App, f: &mut Frame, area: Rect) {
     let total = app.current_todos();
     let name = app.current_name().to_string();
     let todos: Vec<&TodoFile> = if app.searching_content() {
-        total.iter().filter(|t| {
-            app.search_matches(&t.parsed.name)
-            || app.search_matches(&t.parsed.project_id)
-            || app.search_matches(&t.parsed.info)
-            || app.search_matches(&t.parsed.goal)
-            || t.parsed.tasks.iter().any(|task| app.search_matches(&task.text))
-            || app.search_matches(&t.parsed.note)
-            || app.search_matches(&t.parsed.history)
-        }).collect()
+        total.iter().filter(|t| app.todo_matches_search(t)).collect()
     } else {
         total.iter().collect()
     };
@@ -1016,13 +1039,15 @@ fn render_help(app: &App, f: &mut Frame, area: Rect) {
 
 fn render_search_bar(app: &App, f: &mut Frame, area: Rect) {
     let t = &app.theme;
-    let display = if app.search_query.is_empty() {
-        " Search: (type to filter)".to_string()
+    let (display, title) = if app.search_typing {
+        let d = if app.search_query.is_empty() { " (type to filter)".to_string() } else { format!(" {}", app.search_query) };
+        (d, " Search (Tab\u{2192}apply) ")
     } else {
-        format!(" Search: {} ", app.search_query)
+        let d = if app.search_query.is_empty() { String::new() } else { format!(" Filter: {} (Esc\u{2192}clear) ", app.search_query) };
+        (d, " Filter ")
     };
     f.render_widget(
-        Paragraph::new(display.as_str()).block(Block::default().borders(Borders::ALL).title(" Search ").border_style(Style::default().fg(t.status_info))),
+        Paragraph::new(display.as_str()).block(Block::default().borders(Borders::ALL).title(title).border_style(Style::default().fg(t.status_info))),
         area,
     );
 }
@@ -1031,8 +1056,8 @@ fn render_search_bar(app: &App, f: &mut Frame, area: Rect) {
 
 fn render_detail(app: &App, f: &mut Frame, area: Rect) {
     let todos = app.current_todos();
-    if todos.is_empty() { return }
-    let todo = &todos[app.pi().cidx];
+    if app.filtered_content_len() == 0 { return }
+    let todo = &todos[app.real_content_idx()];
 
     let popup = centered_rect(area, area.width.saturating_sub(8).min(100), area.height.saturating_sub(4).min(40));
     f.render_widget(Clear, popup);
@@ -1077,7 +1102,11 @@ fn render_detail(app: &App, f: &mut Frame, area: Rect) {
 // --- Overview overlay ---
 
 fn render_overview(app: &App, f: &mut Frame, area: Rect) {
-    let todos = app.current_todos();
+    let todos: Vec<&TodoFile> = if app.searching_content() {
+        app.current_todos().iter().filter(|t| app.todo_matches_search(t)).collect()
+    } else {
+        app.current_todos().iter().collect()
+    };
     let popup = centered_rect(area, area.width.saturating_sub(16).min(80).max(40), 16);
     f.render_widget(Clear, popup);
 
@@ -1093,7 +1122,7 @@ fn render_overview(app: &App, f: &mut Frame, area: Rect) {
     let mut total_tasks = 0usize;
     let mut done_tasks = 0usize;
 
-    for todo in todos {
+    for todo in &todos {
         if todo.parsed.tasks.is_empty() { no_tasks += 1 }
         else if todo.is_complete() { completed += 1 }
         else { in_progress += 1 }
@@ -1217,9 +1246,11 @@ fn handle_events(app: &mut App) -> io::Result<ViewAction> {
         return Ok(ViewAction::None);
     }
 
-    if app.search_active {
+    if app.search_typing {
+        let was_dismissed = matches!(key.code, KeyCode::Esc);
         match key.code {
-            KeyCode::Esc => { app.search_active = false; app.search_query.clear(); return Ok(ViewAction::None) }
+            KeyCode::Esc => { app.search_active = false; app.search_typing = false; app.search_query.clear(); }
+            KeyCode::Tab | KeyCode::BackTab | KeyCode::Enter => { app.search_typing = false; }
             KeyCode::Backspace => { app.search_query.pop(); }
             KeyCode::Char(c) if key.modifiers == KeyModifiers::NONE => { app.search_query.push(c); }
             _ => {}
@@ -1228,7 +1259,24 @@ fn handle_events(app: &mut App) -> io::Result<ViewAction> {
             let count = app.mode_items(app.panel_mode);
             if app.p().sidx >= count { app.p().sidx = count.saturating_sub(1) }
         }
-        // still searching — fall through to normal bindings for navigation/actions
+        if app.search_typing || was_dismissed {
+            return Ok(ViewAction::None);
+        }
+    }
+    if app.search_active {
+        // filter is active but not typing — normal navigation works
+        if key.code == KeyCode::Esc {
+            app.search_active = false;
+            app.search_query.clear();
+            return Ok(ViewAction::None);
+        }
+        if let KeyCode::Char(c) = key.code {
+            if key.modifiers == KeyModifiers::NONE {
+                app.search_query.push(c);
+                app.search_typing = true;
+                return Ok(ViewAction::None);
+            }
+        }
     }
 
     for (kc, km, action) in global_bindings() {
