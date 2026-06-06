@@ -390,10 +390,9 @@ fn global_up_action(app: &mut App) -> Option<ViewAction> {
         app.selected_left -= 1; app.select_left(app.selected_left);
     } else if app.focus == Focus::Content {
         match app.panel_mode {
-            PanelMode::Projects => { if app.selected_todo > 0 { app.selected_todo -= 1 } }
+            PanelMode::Projects | PanelMode::Backlog => { if app.selected_todo > 0 { app.selected_todo -= 1 } }
             PanelMode::Plans => { app.plan_scroll = app.plan_scroll.saturating_sub(1) }
-                PanelMode::Inbox => { app.inbox_scroll = app.inbox_scroll.saturating_sub(1) }
-                PanelMode::Backlog => { if app.selected_todo > 0 { app.selected_todo -= 1 } }
+            PanelMode::Inbox => { app.inbox_scroll = app.inbox_scroll.saturating_sub(1) }
         }
     }
     None
@@ -405,10 +404,9 @@ fn global_down_action(app: &mut App) -> Option<ViewAction> {
         if app.selected_left + 1 < max { app.selected_left += 1; app.select_left(app.selected_left) }
     } else if app.focus == Focus::Content {
         match app.panel_mode {
-            PanelMode::Projects => { if app.selected_todo + 1 < app.current_todos().len() { app.selected_todo += 1 } }
+            PanelMode::Projects | PanelMode::Backlog => { if app.selected_todo + 1 < app.current_todos().len() { app.selected_todo += 1 } }
             PanelMode::Plans => { app.plan_scroll += 1 }
             PanelMode::Inbox => { app.inbox_scroll += 1 }
-            PanelMode::Backlog => { if app.selected_todo + 1 < app.current_todos().len() { app.selected_todo += 1 } }
         }
     }
     None
@@ -581,6 +579,12 @@ impl App {
         match self.panel_mode {
             PanelMode::Backlog => self.backlog_store.todos_for(self.selected_project),
             _ => self.store.todos_for(self.selected_project, self.show_empty_projects),
+        }
+    }
+    fn current_name(&self) -> &str {
+        match self.panel_mode {
+            PanelMode::Backlog => self.backlog_store.name_for(self.selected_project),
+            _ => self.store.name_for(self.selected_project, self.show_empty_projects),
         }
     }
     fn current_plan(&self) -> Option<&PlanFile> { self.plans.get(self.selected_plan) }
@@ -847,11 +851,7 @@ fn render_right_panel(app: &mut App, f: &mut Frame, area: Rect) {
 
 fn render_todos_content(app: &mut App, f: &mut Frame, area: Rect) {
     let todos_all = app.current_todos();
-    let name = if app.panel_mode == PanelMode::Backlog {
-        app.backlog_store.name_for(app.selected_project).to_string()
-    } else {
-        app.store.name_for(app.selected_project, app.show_empty_projects).to_string()
-    };
+    let name = app.current_name().to_string();
     let todos: Vec<&TodoFile> = if app.search_active && !app.search_query.is_empty() {
         todos_all.iter().filter(|t| {
             app.search_matches(&t.parsed.name)
@@ -906,7 +906,6 @@ fn highlight_matches(line: &str, query: &str, base_style: Style, hl_style: Style
         last = start + query.len();
     }
     if last < line.len() { spans.push(Span::styled(line[last..].to_string(), base_style)); }
-    if spans.is_empty() { spans.push(Span::styled(line.to_string(), base_style)); }
     Line::from(spans)
 }
 
@@ -1051,11 +1050,7 @@ fn render_overview(app: &App, f: &mut Frame, area: Rect) {
     }
 
     let task_summary = if total_tasks > 0 { format!("{}/{}", done_tasks, total_tasks) } else { "n/a".to_string() };
-    let name = if app.panel_mode == PanelMode::Backlog {
-        app.backlog_store.name_for(app.selected_project)
-    } else {
-        app.store.name_for(app.selected_project, app.show_empty_projects)
-    };
+    let name = app.current_name();
 
     let lines = vec![
         Line::from(""),
@@ -1137,13 +1132,11 @@ fn find_tedtui() -> Option<PathBuf> {
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
             if let Some(found) = try_path(dir.join("tedtui")) { return Some(found) }
-            #[cfg(windows)] { if let Some(found) = try_path(dir.join("tedtui.exe")) { return Some(found) } }
         }
     }
     if let Ok(path) = std::env::var("PATH") {
         for dir in std::env::split_paths(&path) {
             if let Some(found) = try_path(dir.join("tedtui")) { return Some(found) }
-            #[cfg(windows)] { if let Some(found) = try_path(dir.join("tedtui.exe")) { return Some(found) } }
         }
     }
     None
@@ -1226,49 +1219,44 @@ fn toggle_empty(app: &mut App) {
 // Terminal suspend/resume
 // ============================================================================
 
-fn suspend_for_editor(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, path: &Path) -> io::Result<()> {
+fn suspend_terminal(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> io::Result<()> {
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
     terminal.show_cursor()?;
-    let editor = find_editor();
-    let status = Command::new(&editor).arg(path).stdin(Stdio::inherit()).stdout(Stdio::inherit()).stderr(Stdio::inherit()).status()?;
-    if !status.success() { eprintln!("editor exited with: {}", status) }
+    Ok(())
+}
+
+fn resume_terminal(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> io::Result<()> {
     enable_raw_mode()?;
     execute!(terminal.backend_mut(), EnterAlternateScreen, EnableMouseCapture)?;
     terminal.clear()?;
     Ok(())
 }
 
+fn suspend_for_editor(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, path: &Path) -> io::Result<()> {
+    suspend_terminal(terminal)?;
+    let editor = find_editor();
+    let status = Command::new(&editor).arg(path).stdin(Stdio::inherit()).stdout(Stdio::inherit()).stderr(Stdio::inherit()).status()?;
+    if !status.success() { eprintln!("editor exited with: {}", status) }
+    resume_terminal(terminal)
+}
+
 fn suspend_for_new_todo(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> io::Result<()> {
-    disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
-    terminal.show_cursor()?;
+    suspend_terminal(terminal)?;
     if let Some(tedtui) = find_tedtui() {
         let status = Command::new(&tedtui).stdin(Stdio::inherit()).stdout(Stdio::inherit()).stderr(Stdio::inherit()).status()?;
         if !status.success() { eprintln!("tedtui exited with: {}", status) }
     } else { eprintln!("tedtui binary not found") }
-    enable_raw_mode()?;
-    execute!(terminal.backend_mut(), EnterAlternateScreen, EnableMouseCapture)?;
-    terminal.clear()?;
-    Ok(())
+    resume_terminal(terminal)
 }
 
 fn suspend_for_tedtui(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, file: &Path) -> io::Result<()> {
-    disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
-    terminal.show_cursor()?;
+    suspend_terminal(terminal)?;
     if let Some(tedtui) = find_tedtui() {
-        let status = Command::new(&tedtui).arg(file)
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .status()?;
+        let status = Command::new(&tedtui).arg(file).stdin(Stdio::inherit()).stdout(Stdio::inherit()).stderr(Stdio::inherit()).status()?;
         if !status.success() { eprintln!("tedtui exited with: {}", status) }
     } else { eprintln!("tedtui binary not found") }
-    enable_raw_mode()?;
-    execute!(terminal.backend_mut(), EnterAlternateScreen, EnableMouseCapture)?;
-    terminal.clear()?;
-    Ok(())
+    resume_terminal(terminal)
 }
 
 fn parse_inbox_content(content: &str, fallback_name: &str) -> (String, String, String) {
@@ -1307,9 +1295,7 @@ fn parse_inbox_content(content: &str, fallback_name: &str) -> (String, String, S
 }
 
 fn suspend_for_inbox_tedtui(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, inbox: &InboxFile) -> io::Result<()> {
-    disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
-    terminal.show_cursor()?;
+    suspend_terminal(terminal)?;
 
     let (name, goal, info) = parse_inbox_content(&inbox.content, &inbox.name);
 
@@ -1327,10 +1313,7 @@ fn suspend_for_inbox_tedtui(terminal: &mut Terminal<CrosstermBackend<std::io::St
         if !status.success() { eprintln!("tedtui exited with: {}", status) }
     } else { eprintln!("tedtui binary not found") }
 
-    enable_raw_mode()?;
-    execute!(terminal.backend_mut(), EnterAlternateScreen, EnableMouseCapture)?;
-    terminal.clear()?;
-    Ok(())
+    resume_terminal(terminal)
 }
 
 // ============================================================================
@@ -1408,13 +1391,8 @@ fn main() -> io::Result<()> {
 }
 
 fn suspend_for_obsidian(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, cmd: &str) -> io::Result<()> {
-    disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
-    terminal.show_cursor()?;
+    suspend_terminal(terminal)?;
     let status = Command::new("sh").arg("-c").arg(cmd).stdin(Stdio::inherit()).stdout(Stdio::inherit()).stderr(Stdio::inherit()).status()?;
     if !status.success() { eprintln!("obsidian exited with: {}", status) }
-    enable_raw_mode()?;
-    execute!(terminal.backend_mut(), EnterAlternateScreen, EnableMouseCapture)?;
-    terminal.clear()?;
-    Ok(())
+    resume_terminal(terminal)
 }
